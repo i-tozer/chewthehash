@@ -27,6 +27,11 @@ const txCache = new LRUCache<string, { value: unknown; cachedAt: number }>({
   ttl: 1000 * 60 * 10
 });
 
+const recentCache = new LRUCache<string, { value: string[]; cachedAt: number }>({
+  max: 20,
+  ttl: 1000 * 15
+});
+
 const rateLimiter = new LRUCache<string, { count: number; resetAt: number }>({
   max: 2000,
   ttl: 1000 * 60 * 2
@@ -157,6 +162,48 @@ export async function getTransactionBlock(
       );
       txCache.set(cacheKey, { value: result, cachedAt: Date.now() });
       return { data: result, cached: false, provider: provider.url };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError ?? new Error('All providers failed');
+}
+
+export async function getRecentTransactionDigests(
+  limit: number,
+  requestId: string
+) {
+  const cacheKey = `recent:${limit}`;
+  const cached = recentCache.get(cacheKey);
+  if (cached) {
+    return { digests: cached.value, cached: true, provider: 'cache' };
+  }
+
+  const providers = pickProviders(loadProviders());
+  const timeoutMs = Number(process.env.SUI_RPC_TIMEOUT_MS ?? 2200);
+  let lastError: unknown = null;
+
+  for (const provider of providers) {
+    if (isCircuitOpen(getProviderState(provider))) continue;
+    try {
+      const result = await jsonRpcRequest<any>(
+        provider,
+        'suix_queryTransactionBlocks',
+        [
+          { filter: null, options: { showInput: false, showEffects: false } },
+          null,
+          limit,
+          true
+        ],
+        timeoutMs,
+        requestId
+      );
+      const digests = (result?.data ?? [])
+        .map((item: any) => item?.digest)
+        .filter(Boolean);
+      recentCache.set(cacheKey, { value: digests, cachedAt: Date.now() });
+      return { digests, cached: false, provider: provider.url };
     } catch (error) {
       lastError = error;
     }

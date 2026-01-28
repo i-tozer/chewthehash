@@ -1,4 +1,4 @@
-# Suggested Improvements
+# IMPROVEMENTS
 
 - gRPC path: add gRPC support behind the proxy with a JSON‑RPC fallback; measure latency and error rates per provider.
 - Schema‑aware parsing: map known packages/modules to richer templates; keep strict fallback for unknowns.
