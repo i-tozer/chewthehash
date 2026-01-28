@@ -79,7 +79,7 @@ function shorten(value?: string | null, prefix = 6, suffix = 4) {
   return `${value.slice(0, prefix)}...${value.slice(-suffix)}`;
 }
 
-function formatArgument(arg: any) {
+function formatArgument(arg: any): string {
   if (!arg) return 'unknown';
   if (arg === 'GasCoin') return 'GasCoin';
   if (typeof arg === 'string') return arg;

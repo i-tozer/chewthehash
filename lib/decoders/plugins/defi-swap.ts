@@ -26,9 +26,11 @@ export const DEFI_SWAP_DECODER: DecoderPlugin = {
   },
   match(ctx: DecoderContext) {
     return ctx.moveCalls.some((call) => {
-      const module = call.module?.toLowerCase() ?? '';
+      const moduleName = call.module?.toLowerCase() ?? '';
       const fn = call.fn?.toLowerCase() ?? '';
-      return SWAP_MODULES.has(module) || SWAP_FUNCTIONS.has(fn) || fn.includes('swap');
+      return (
+        SWAP_MODULES.has(moduleName) || SWAP_FUNCTIONS.has(fn) || fn.includes('swap')
+      );
     });
   },
   describe() {

@@ -56,7 +56,7 @@ export async function GET(request: Request) {
       requestId
     );
     const tagged = await Promise.all(
-      digests.map(async (digest) => {
+      digests.map(async (digest: string) => {
         try {
           const { data } = await getTransactionBlock(digest, OPTIONS, requestId);
           const plugin = runDecoderPlugins({
