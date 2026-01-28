@@ -1,14 +1,36 @@
 import { ChannelCredentials } from '@grpc/grpc-js';
 import { GrpcTransport } from '@protobuf-ts/grpc-transport';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
-import type { Owner } from '@mysten/sui/grpc/proto/sui/rpc/v2/owner.js';
-import { Owner_OwnerKind } from '@mysten/sui/grpc/proto/sui/rpc/v2/owner.js';
-import type { Command } from '@mysten/sui/grpc/proto/sui/rpc/v2/transaction.js';
-import {
-  ChangedObject_IdOperation,
-  ChangedObject_InputObjectState,
-  ChangedObject_OutputObjectState
-} from '@mysten/sui/grpc/proto/sui/rpc/v2/effects.js';
+type GrpcOwner = { kind?: number; address?: string } | null | undefined;
+
+const OWNER_KIND = {
+  UNKNOWN: 0,
+  ADDRESS: 1,
+  OBJECT: 2,
+  SHARED: 3,
+  IMMUTABLE: 4,
+  CONSENSUS_ADDRESS: 5
+} as const;
+
+const INPUT_OBJECT_STATE = {
+  UNKNOWN: 0,
+  DOES_NOT_EXIST: 1,
+  EXISTS: 2
+} as const;
+
+const OUTPUT_OBJECT_STATE = {
+  UNKNOWN: 0,
+  DOES_NOT_EXIST: 1,
+  OBJECT_WRITE: 2,
+  PACKAGE_WRITE: 3
+} as const;
+
+const ID_OPERATION = {
+  UNKNOWN: 0,
+  NONE: 1,
+  CREATED: 2,
+  DELETED: 3
+} as const;
 
 let grpcClient: SuiGrpcClient | null = null;
 
@@ -48,31 +70,31 @@ export function getGrpcClient() {
   return grpcClient;
 }
 
-function mapOwner(owner: Owner | null | undefined) {
+function mapOwner(owner: GrpcOwner) {
   if (!owner || owner.kind == null) return null;
   switch (owner.kind) {
-    case Owner_OwnerKind.ADDRESS:
+    case OWNER_KIND.ADDRESS:
       return { AddressOwner: owner.address };
-    case Owner_OwnerKind.OBJECT:
+    case OWNER_KIND.OBJECT:
       return { ObjectOwner: owner.address };
-    case Owner_OwnerKind.SHARED:
+    case OWNER_KIND.SHARED:
       return { Shared: true };
-    case Owner_OwnerKind.IMMUTABLE:
+    case OWNER_KIND.IMMUTABLE:
       return { Immutable: true };
-    case Owner_OwnerKind.CONSENSUS_ADDRESS:
+    case OWNER_KIND.CONSENSUS_ADDRESS:
       return { AddressOwner: owner.address };
     default:
       return null;
   }
 }
 
-function ownersEqual(a: Owner | null | undefined, b: Owner | null | undefined) {
+function ownersEqual(a: GrpcOwner, b: GrpcOwner) {
   if (!a || !b) return false;
   if (a.kind !== b.kind) return false;
-  if (a.kind === Owner_OwnerKind.ADDRESS || a.kind === Owner_OwnerKind.OBJECT) {
+  if (a.kind === OWNER_KIND.ADDRESS || a.kind === OWNER_KIND.OBJECT) {
     return a.address === b.address;
   }
-  if (a.kind === Owner_OwnerKind.CONSENSUS_ADDRESS) {
+  if (a.kind === OWNER_KIND.CONSENSUS_ADDRESS) {
     return a.address === b.address;
   }
   return true;
@@ -85,11 +107,13 @@ function normalizeGasValue(value: unknown) {
   return '0';
 }
 
-function mapCommandsToTransactions(commands: Command[] | undefined) {
+function mapCommandsToTransactions(commands: unknown[] | undefined) {
   if (!commands) return [];
   return commands
     .map((command) => {
-      const move = command.command.oneofKind === 'moveCall' ? command.command.moveCall : null;
+      const entry = command as any;
+      const move =
+        entry?.command?.oneofKind === 'moveCall' ? entry.command.moveCall : null;
       if (!move) return null;
       return {
         MoveCall: {
@@ -143,16 +167,16 @@ export async function getGrpcTransactionBlock(digest: string) {
     let type = 'mutated';
 
     if (
-      change.idOperation === ChangedObject_IdOperation.CREATED ||
-      change.inputState === ChangedObject_InputObjectState.DOES_NOT_EXIST
+      change.idOperation === ID_OPERATION.CREATED ||
+      change.inputState === INPUT_OBJECT_STATE.DOES_NOT_EXIST
     ) {
       type = 'created';
     } else if (
-      change.idOperation === ChangedObject_IdOperation.DELETED ||
-      change.outputState === ChangedObject_OutputObjectState.DOES_NOT_EXIST
+      change.idOperation === ID_OPERATION.DELETED ||
+      change.outputState === OUTPUT_OBJECT_STATE.DOES_NOT_EXIST
     ) {
       type = 'deleted';
-    } else if (change.outputState === ChangedObject_OutputObjectState.PACKAGE_WRITE) {
+    } else if (change.outputState === OUTPUT_OBJECT_STATE.PACKAGE_WRITE) {
       type = 'published';
     } else if (outputOwner && inputOwner && !ownersEqual(inputOwner, outputOwner)) {
       type = 'transferred';
