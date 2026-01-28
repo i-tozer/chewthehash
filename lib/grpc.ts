@@ -1,7 +1,14 @@
 import { ChannelCredentials } from '@grpc/grpc-js';
 import { GrpcTransport } from '@protobuf-ts/grpc-transport';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
-import type { Experimental_SuiClientTypes } from '@mysten/sui/experimental';
+import type { Owner } from '@mysten/sui/grpc/proto/sui/rpc/v2/owner.js';
+import { Owner_OwnerKind } from '@mysten/sui/grpc/proto/sui/rpc/v2/owner.js';
+import type { Command } from '@mysten/sui/grpc/proto/sui/rpc/v2/transaction.js';
+import {
+  ChangedObject_IdOperation,
+  ChangedObject_InputObjectState,
+  ChangedObject_OutputObjectState
+} from '@mysten/sui/grpc/proto/sui/rpc/v2/effects.js';
 
 let grpcClient: SuiGrpcClient | null = null;
 
@@ -34,45 +41,41 @@ export function getGrpcClient() {
   });
 
   grpcClient = new SuiGrpcClient({
-    network: (process.env.SUI_GRPC_NETWORK ?? 'mainnet') as Experimental_SuiClientTypes.Network,
+    network: (process.env.SUI_GRPC_NETWORK ?? 'mainnet') as any,
     transport
   });
 
   return grpcClient;
 }
 
-function mapOwner(owner: Experimental_SuiClientTypes.ObjectOwner | null | undefined) {
-  if (!owner) return null;
-  switch (owner.$kind) {
-    case 'AddressOwner':
-      return { AddressOwner: owner.AddressOwner };
-    case 'ObjectOwner':
-      return { ObjectOwner: owner.ObjectOwner };
-    case 'Shared':
+function mapOwner(owner: Owner | null | undefined) {
+  if (!owner || owner.kind == null) return null;
+  switch (owner.kind) {
+    case Owner_OwnerKind.ADDRESS:
+      return { AddressOwner: owner.address };
+    case Owner_OwnerKind.OBJECT:
+      return { ObjectOwner: owner.address };
+    case Owner_OwnerKind.SHARED:
       return { Shared: true };
-    case 'Immutable':
+    case Owner_OwnerKind.IMMUTABLE:
       return { Immutable: true };
-    case 'ConsensusAddressOwner':
-      return { AddressOwner: owner.ConsensusAddressOwner.owner };
+    case Owner_OwnerKind.CONSENSUS_ADDRESS:
+      return { AddressOwner: owner.address };
     default:
       return null;
   }
 }
 
-function ownersEqual(
-  a: Experimental_SuiClientTypes.ObjectOwner | null,
-  b: Experimental_SuiClientTypes.ObjectOwner | null
-) {
+function ownersEqual(a: Owner | null | undefined, b: Owner | null | undefined) {
   if (!a || !b) return false;
-  if (a.$kind !== b.$kind) return false;
-  if (a.$kind === 'AddressOwner') return a.AddressOwner === (b as any).AddressOwner;
-  if (a.$kind === 'ObjectOwner') return a.ObjectOwner === (b as any).ObjectOwner;
-  if (a.$kind === 'Shared') return true;
-  if (a.$kind === 'Immutable') return true;
-  if (a.$kind === 'ConsensusAddressOwner') {
-    return a.ConsensusAddressOwner.owner === (b as any).ConsensusAddressOwner.owner;
+  if (a.kind !== b.kind) return false;
+  if (a.kind === Owner_OwnerKind.ADDRESS || a.kind === Owner_OwnerKind.OBJECT) {
+    return a.address === b.address;
   }
-  return false;
+  if (a.kind === Owner_OwnerKind.CONSENSUS_ADDRESS) {
+    return a.address === b.address;
+  }
+  return true;
 }
 
 function normalizeGasValue(value: unknown) {
@@ -82,11 +85,11 @@ function normalizeGasValue(value: unknown) {
   return '0';
 }
 
-function mapCommandsToTransactions(commands: any[] | undefined) {
+function mapCommandsToTransactions(commands: Command[] | undefined) {
   if (!commands) return [];
   return commands
     .map((command) => {
-      const move = command?.MoveCall;
+      const move = command.command.oneofKind === 'moveCall' ? command.command.moveCall : null;
       if (!move) return null;
       return {
         MoveCall: {
@@ -102,23 +105,54 @@ function mapCommandsToTransactions(commands: any[] | undefined) {
 
 export async function getGrpcTransactionBlock(digest: string) {
   const client = getGrpcClient();
-  const { transaction } = await client.core.getTransaction({ digest });
-  const objectTypes = await transaction.objectTypes;
-  const effects = transaction.effects;
-  const commands = transaction.transaction?.commands ?? [];
-  const gasData = transaction.transaction?.gasData ?? {};
+  const { response } = await client.ledgerService.getTransaction({
+    digest,
+    readMask: {
+      paths: ['digest', 'transaction', 'effects', 'balance_changes', 'objects', 'timestamp']
+    }
+  });
+
+  const executed = response.transaction;
+  if (!executed) {
+    throw new Error('No transaction returned from gRPC provider.');
+  }
+
+  const objectTypes: Record<string, string> = {};
+  executed.objects?.objects?.forEach((object) => {
+    if (object.objectId && object.objectType) {
+      objectTypes[object.objectId] = object.objectType;
+    }
+  });
+
+  const txData = executed.transaction;
+  const programmable = txData?.kind?.data.oneofKind === 'programmableTransaction'
+    ? txData.kind.data.programmableTransaction
+    : null;
+  const commands = programmable?.commands ?? [];
+
+  const effects = executed.effects;
+  if (!effects) {
+    throw new Error('gRPC provider returned no effects for this transaction.');
+  }
 
   const objectChanges = effects.changedObjects.map((change) => {
-    const objectType = objectTypes?.[change.id] ?? 'Unknown type';
+    const objectId = change.objectId ?? 'unknown';
+    const objectType = objectTypes[objectId] ?? 'Unknown type';
     const inputOwner = change.inputOwner ?? null;
     const outputOwner = change.outputOwner ?? null;
     let type = 'mutated';
 
-    if (change.idOperation === 'Created' || change.inputState === 'DoesNotExist') {
+    if (
+      change.idOperation === ChangedObject_IdOperation.CREATED ||
+      change.inputState === ChangedObject_InputObjectState.DOES_NOT_EXIST
+    ) {
       type = 'created';
-    } else if (change.idOperation === 'Deleted' || change.outputState === 'DoesNotExist') {
+    } else if (
+      change.idOperation === ChangedObject_IdOperation.DELETED ||
+      change.outputState === ChangedObject_OutputObjectState.DOES_NOT_EXIST
+    ) {
       type = 'deleted';
-    } else if (change.outputState === 'PackageWrite') {
+    } else if (change.outputState === ChangedObject_OutputObjectState.PACKAGE_WRITE) {
       type = 'published';
     } else if (outputOwner && inputOwner && !ownersEqual(inputOwner, outputOwner)) {
       type = 'transferred';
@@ -126,24 +160,26 @@ export async function getGrpcTransactionBlock(digest: string) {
 
     return {
       type,
-      objectId: change.id,
+      objectId,
       objectType,
       owner: type === 'deleted' ? mapOwner(inputOwner) : mapOwner(outputOwner),
-      sender: transaction.transaction?.sender,
+      sender: txData?.sender,
       recipient: type === 'transferred' ? mapOwner(outputOwner) : undefined
     };
   });
 
-  const balanceChanges = (transaction.balanceChanges ?? []).map((change) => ({
+  const balanceChanges = (executed.balanceChanges ?? []).map((change) => ({
     owner: { AddressOwner: change.address },
     coinType: change.coinType,
     amount: change.amount
   }));
 
+  const gasPayment = txData?.gasPayment;
+
   const tx = {
-    digest: transaction.digest,
+    digest: executed.digest ?? digest,
     effects: {
-      status: { status: effects.status.success ? 'success' : 'failure' },
+      status: { status: effects.status?.success ? 'success' : 'failure' },
       gasUsed: {
         computationCost: normalizeGasValue(effects.gasUsed?.computationCost),
         storageCost: normalizeGasValue(effects.gasUsed?.storageCost),
@@ -152,10 +188,9 @@ export async function getGrpcTransactionBlock(digest: string) {
     },
     transaction: {
       data: {
-        sender: transaction.transaction?.sender,
+        sender: txData?.sender,
         gasData: {
-          ...gasData,
-          budget: normalizeGasValue(gasData?.budget)
+          budget: normalizeGasValue(gasPayment?.budget)
         },
         transaction: {
           transactions: mapCommandsToTransactions(commands)
@@ -164,8 +199,16 @@ export async function getGrpcTransactionBlock(digest: string) {
     },
     objectChanges,
     balanceChanges,
-    timestampMs: null
+    timestampMs: executed.timestamp
+      ? String(
+          Number(executed.timestamp.seconds ?? 0n) * 1000 +
+            Math.floor(Number(executed.timestamp.nanos ?? 0) / 1_000_000)
+        )
+      : null
   };
 
-  return { data: tx, provider: process.env.SUI_GRPC_ENDPOINT ?? 'fullnode.mainnet.sui.io:443' };
+  return {
+    data: tx,
+    provider: process.env.SUI_GRPC_ENDPOINT ?? 'fullnode.mainnet.sui.io:443'
+  };
 }
