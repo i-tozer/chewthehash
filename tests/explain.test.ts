@@ -13,6 +13,7 @@ describe('explainTransaction', () => {
     expect(result.ok).toBe(true);
     expect(result.summary.status).toBe('success');
     expect(result.summary.sender).toContain('0x8e1d');
+    expect(result.summary.oneLiner.length).toBeGreaterThan(0);
     expect(result.gas.total).toContain('SUI');
     expect(result.moveCalls.length).toBeGreaterThan(0);
     expect(result.objectChanges.length).toBeGreaterThan(0);

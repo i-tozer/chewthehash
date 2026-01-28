@@ -246,6 +246,55 @@ button:hover {
   background: rgba(255, 138, 61, 0.1);
 }
 
+.badge.beta {
+  border-color: rgba(255, 138, 61, 0.6);
+  background: rgba(255, 138, 61, 0.2);
+  color: #ffd9bf;
+  font-size: 0.7rem;
+}
+
+.summary-card {
+  padding: 22px 24px;
+}
+
+.summary-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.summary-line {
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #ffe3cd;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.mode-option {
+  background: rgba(10, 14, 13, 0.8);
+  color: #ffd5b6;
+  border: 1px solid rgba(255, 138, 61, 0.3);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mode-option.active {
+  background: rgba(255, 138, 61, 0.2);
+  border-color: rgba(255, 138, 61, 0.8);
+  color: #ffe1c6;
+}
+
 .detail-list--calls li {
   justify-content: flex-start;
   align-items: flex-start;

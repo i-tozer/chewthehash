@@ -164,6 +164,32 @@ function pluralize(count: number, word: string) {
   return `${count} ${word}${count === 1 ? '' : 's'}`;
 }
 
+function isSuiCoin(coinType?: string | null) {
+  if (!coinType) return false;
+  return coinType.includes('::sui::SUI');
+}
+
+function getSenderSuiDelta(tx: TransactionResponse): bigint | null {
+  const sender = tx.transaction?.data?.sender;
+  if (!sender) return null;
+  const changes = tx.balanceChanges ?? [];
+  let total = 0n;
+  let found = false;
+  for (const change of changes) {
+    if (!isSuiCoin(change.coinType)) continue;
+    const owner = change.owner;
+    const address =
+      typeof owner === 'string'
+        ? owner
+        : owner?.AddressOwner ?? owner?.ObjectOwner;
+    if (!address) continue;
+    if (address.toLowerCase() !== sender.toLowerCase()) continue;
+    total += BigInt(change.amount ?? 0);
+    found = true;
+  }
+  return found ? total : null;
+}
+
 function buildSummary(
   tx: TransactionResponse,
   transfers: TransferView[],
@@ -206,8 +232,50 @@ function buildSummary(
     sender,
     headline,
     subtitle,
-    timing: `Explained in ${latencyMs}ms`
+    timing: `Explained in ${latencyMs}ms`,
+    oneLiner: buildOneLiner(tx, transfers, moveCalls, objectChanges)
   };
+}
+
+function buildOneLiner(
+  tx: TransactionResponse,
+  transfers: TransferView[],
+  moveCalls: MoveCallView[],
+  objectChanges: SimpleItem[]
+) {
+  const statusRaw = tx.effects?.status?.status ?? 'unknown';
+  const status =
+    statusRaw === 'success' || statusRaw === 'failure' ? statusRaw : 'unknown';
+  if (status === 'failure') return 'Failed to execute.';
+
+  const hasPublish = (tx.objectChanges ?? []).some(
+    (change) => change.type === 'published'
+  );
+  if (hasPublish) return 'Published a package.';
+
+  if (transfers.length > 0) {
+    const recipients = transfers.length;
+    return `Transferred assets to ${recipients} recipient${
+      recipients === 1 ? '' : 's'
+    }.`;
+  }
+
+  const senderDelta = getSenderSuiDelta(tx);
+  if (senderDelta && senderDelta !== 0n) {
+    const direction = senderDelta < 0n ? 'Spent' : 'Received';
+    const amount = senderDelta < 0n ? senderDelta * -1n : senderDelta;
+    return `${direction} ${formatSuiFromMist(amount)}.`;
+  }
+
+  if (moveCalls.length > 0) {
+    return `Executed ${pluralize(moveCalls.length, 'Move call')}.`;
+  }
+
+  if (objectChanges.length > 0) {
+    return `Processed ${pluralize(objectChanges.length, 'object change')}.`;
+  }
+
+  return 'Processed transaction.';
 }
 
 function buildTimeline(

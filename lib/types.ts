@@ -12,6 +12,7 @@ export type SummaryView = {
   headline: string;
   subtitle: string;
   timing: string;
+  oneLiner: string;
 };
 
 export type SimpleItem = {

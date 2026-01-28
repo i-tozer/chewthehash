@@ -69,6 +69,7 @@ export default function Home() {
   const [recentDigests, setRecentDigests] = useState<string[]>([]);
   const [recentLoading, setRecentLoading] = useState(false);
   const [recentError, setRecentError] = useState<string | null>(null);
+  const [rpcMode, setRpcMode] = useState<'json' | 'grpc'>('json');
   const resultAnchorRef = useRef<HTMLDivElement | null>(null);
 
   const hasResult = !!result?.ok;
@@ -101,6 +102,17 @@ export default function Home() {
     loadRecent();
   }, []);
 
+  useEffect(() => {
+    const stored = window.localStorage.getItem('rpcMode');
+    if (stored === 'grpc' || stored === 'json') {
+      setRpcMode(stored);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem('rpcMode', rpcMode);
+  }, [rpcMode]);
+
   const scrollToResults = () => {
     if (!resultAnchorRef.current) return;
     resultAnchorRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -123,7 +135,8 @@ export default function Home() {
     scrollToResults();
 
     try {
-      const response = await fetch('/api/tx', {
+      const endpoint = rpcMode === 'grpc' ? '/api/tx/grpc' : '/api/tx';
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ digest: trimmed })
@@ -163,6 +176,22 @@ export default function Home() {
       <section className="card fade-in">
         <div className="terminal-header">
           <h1>Sui Transaction Explainer</h1>
+          <div className="mode-toggle">
+            <button
+              type="button"
+              className={`mode-option ${rpcMode === 'json' ? 'active' : ''}`}
+              onClick={() => setRpcMode('json')}
+            >
+              JSON-RPC
+            </button>
+            <button
+              type="button"
+              className={`mode-option ${rpcMode === 'grpc' ? 'active' : ''}`}
+              onClick={() => setRpcMode('grpc')}
+            >
+              gRPC
+            </button>
+          </div>
         </div>
         <p>
           &gt; Paste a transaction digest to get a plain-language summary in under
@@ -229,6 +258,16 @@ export default function Home() {
           </div>
         )}
       </section>
+
+      {hasResult && result && (
+        <section className="card summary-card fade-in">
+          <div className="summary-header">
+            <h3>Summary</h3>
+            <span className="badge beta">Beta</span>
+          </div>
+          <p className="summary-line">{result.summary.oneLiner}</p>
+        </section>
+      )}
 
       <section className="card fade-in">
         <h3>Recent transactions</h3>

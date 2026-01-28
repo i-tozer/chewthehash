@@ -20,6 +20,10 @@ Open `http://localhost:3000` and paste a digest.
 - `SUI_RPC_PRIMARY` – Primary JSON‑RPC URL (recommended).
 - `SUI_RPC_SECONDARY` – Secondary JSON‑RPC URL for failover.
 - `SUI_RPC_TERTIARY` – Optional third provider.
+- `SUI_GRPC_ENDPOINT` – gRPC endpoint host (example: `sui-mainnet.nodeinfra.com:443`).
+- `SUI_GRPC_NETWORK` – Network name for the gRPC client (default: `mainnet`).
+- `SUI_GRPC_AUTH_HEADER` – Optional auth header name for gRPC providers.
+- `SUI_GRPC_AUTH_TOKEN` – Optional auth token for gRPC providers.
 - `SUI_RPC_TIMEOUT_MS` – Per‑request timeout (default: `2200`).
 - `RATE_LIMIT_MAX` – Requests per IP per window (default: `30`).
 - `RATE_LIMIT_WINDOW_MS` – Rate limit window in ms (default: `60000`).
@@ -50,4 +54,4 @@ Deploy on Vercel or Netlify. Set the RPC provider env vars and keep `FIXTURE_MOD
 ## Notes
 - Gas values are converted from MIST to SUI (1e9 MIST = 1 SUI).
 - Complex Move arguments fall back to raw data to avoid incorrect explanations.
-- JSON‑RPC is used today; provider config is structured for future gRPC upgrades.
+- JSON‑RPC is the default; gRPC can be selected from the UI toggle once configured.
