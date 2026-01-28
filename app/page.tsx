@@ -364,15 +364,46 @@ export default function Home() {
 
       {hasResult && result && (
         <section className="card fade-in">
+          <h3>What happened</h3>
+          <div className="timeline">
+            {result.timeline.map((item, index) => (
+              <div className="timeline-item" key={item.id}>
+                <div className="timeline-dot" />
+                <div className="timeline-content">
+                  <div className="timeline-title">
+                    <span className="timeline-index">{String(index + 1).padStart(2, '0')}</span>
+                    {item.title}
+                  </div>
+                  {item.detail && <div className="timeline-detail">{item.detail}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {hasResult && result && (
+        <section className="card fade-in">
           <details open>
             <summary>Object changes</summary>
             {result.objectChanges.length === 0 ? (
               <p>No object changes found.</p>
             ) : (
-              <ul className="detail-list">
+              <ul className="detail-list detail-list--objects">
                 {result.objectChanges.map((change) => (
                   <li key={change.id}>
-                    <span>{change.label}</span>
+                    <div className="detail-main">
+                      <span>{change.label}</span>
+                      {change.badges && (
+                        <div className="badge-row">
+                          {change.badges.map((badge) => (
+                            <span className="badge" key={`${change.id}-${badge}`}>
+                              {badge}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <span>{change.detail}</span>
                   </li>
                 ))}

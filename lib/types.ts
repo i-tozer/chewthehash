@@ -18,6 +18,7 @@ export type SimpleItem = {
   id: string;
   label: string;
   detail: string;
+  badges?: string[];
 };
 
 export type MoveCallView = {
@@ -32,6 +33,13 @@ export type TransferView = {
   to: string;
 };
 
+export type TimelineItem = {
+  id: string;
+  title: string;
+  detail?: string;
+  kind: 'status' | 'move' | 'object' | 'balance' | 'gas';
+};
+
 export type ExplainResponse = {
   ok: boolean;
   digest: string;
@@ -41,6 +49,7 @@ export type ExplainResponse = {
   objectChanges: SimpleItem[];
   balanceChanges: SimpleItem[];
   transfers: TransferView[];
+  timeline: TimelineItem[];
   raw: unknown;
   meta: {
     latencyMs: number;

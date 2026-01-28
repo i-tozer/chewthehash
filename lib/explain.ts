@@ -4,6 +4,7 @@ import type {
   MoveCallView,
   SimpleItem,
   SummaryView,
+  TimelineItem,
   TransferView
 } from './types';
 import {
@@ -92,6 +93,14 @@ function parseObjectChanges(tx: TransactionResponse): SimpleItem[] {
     const objectType = formatType(change.objectType);
     const objectId = change.objectId ? shortenAddress(change.objectId) : 'unknown';
     const owner = formatOwner(change.owner ?? change.recipient);
+    const ownerBadge = (() => {
+      const record = change.owner ?? change.recipient;
+      if (record?.AddressOwner) return 'ADDRESS';
+      if (record?.ObjectOwner) return 'OBJECT';
+      if (record?.Shared) return 'SHARED';
+      if (record?.Immutable) return 'IMMUTABLE';
+      return 'UNKNOWN';
+    })();
     let label = `${type} ${objectType}`;
     let detail = `${owner} · ${objectId}`;
 
@@ -113,7 +122,8 @@ function parseObjectChanges(tx: TransactionResponse): SimpleItem[] {
     return {
       id: `${type}-${index}`,
       label,
-      detail
+      detail,
+      badges: [type.toUpperCase(), objectType.toUpperCase(), ownerBadge]
     };
   });
 }
@@ -200,6 +210,63 @@ function buildSummary(
   };
 }
 
+function buildTimeline(
+  tx: TransactionResponse,
+  gas: GasSummaryView,
+  moveCalls: MoveCallView[],
+  objectChanges: SimpleItem[],
+  balanceChanges: SimpleItem[]
+): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  const statusRaw = tx.effects?.status?.status ?? 'unknown';
+  const status =
+    statusRaw === 'success' || statusRaw === 'failure' ? statusRaw : 'unknown';
+  const sender = shortenAddress(tx.transaction?.data?.sender ?? 'unknown');
+
+  items.push({
+    id: 'status',
+    kind: 'status',
+    title: `Status: ${status}`,
+    detail: `Sender ${sender}`
+  });
+
+  moveCalls.forEach((call, index) => {
+    items.push({
+      id: `move-${index}`,
+      kind: 'move',
+      title: `Move call: ${call.fn}`,
+      detail: call.label
+    });
+  });
+
+  objectChanges.forEach((change, index) => {
+    items.push({
+      id: `object-${index}`,
+      kind: 'object',
+      title: change.label,
+      detail: change.detail
+    });
+  });
+
+  balanceChanges.forEach((change, index) => {
+    items.push({
+      id: `balance-${index}`,
+      kind: 'balance',
+      title: change.label,
+      detail: change.detail
+    });
+  });
+
+  items.push({
+    id: 'gas',
+    kind: 'gas',
+    title: `Gas total ${gas.total}`,
+    detail: `Compute ${gas.computation} · Storage ${gas.storage} · Rebate ${gas.rebate}`
+  });
+
+  return items;
+}
+
 export function explainTransaction(
   tx: TransactionResponse,
   meta: { latencyMs: number; cached: boolean; provider: string; requestId: string }
@@ -209,6 +276,7 @@ export function explainTransaction(
   const objectChanges = parseObjectChanges(tx);
   const balanceChanges = parseBalanceChanges(tx);
   const transfers = parseTransfers(tx);
+  const timeline = buildTimeline(tx, gas, moveCalls, objectChanges, balanceChanges);
 
   return {
     ok: true,
@@ -226,6 +294,7 @@ export function explainTransaction(
     objectChanges,
     balanceChanges,
     transfers,
+    timeline,
     raw: tx,
     meta
   };

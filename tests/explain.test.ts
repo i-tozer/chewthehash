@@ -17,6 +17,7 @@ describe('explainTransaction', () => {
     expect(result.moveCalls.length).toBeGreaterThan(0);
     expect(result.objectChanges.length).toBeGreaterThan(0);
     expect(result.balanceChanges.length).toBeGreaterThan(0);
+    expect(result.timeline.length).toBeGreaterThan(0);
   });
 
   it('builds transfer flow entries', () => {
@@ -29,5 +30,6 @@ describe('explainTransaction', () => {
 
     expect(result.transfers.length).toBe(1);
     expect(result.transfers[0].to).toContain('0x4c76');
+    expect(result.objectChanges[0].badges?.length).toBeGreaterThan(0);
   });
 });
