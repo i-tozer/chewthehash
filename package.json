@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "coverage:update": "node scripts/update-coverage.ts"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.3",

@@ -11,6 +11,7 @@
 - Interpret Programmable Transaction Block commands (transfer, split, merge, publish, etc.).
 - Convert common command sequences into concise, human‑readable actions.
 - Maintain safe fallbacks for unknown or complex patterns.
+- Use plugin decoders for high‑volume flows (DeFi/NFT/Gaming) and update weekly.
 
 ### Move schema + object decoding
 - Fetch Move package metadata and schema data via gRPC.

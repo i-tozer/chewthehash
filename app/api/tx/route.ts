@@ -4,6 +4,7 @@ import path from 'path';
 import { readFile } from 'fs/promises';
 import { checkRateLimit, getClientIp, getTransactionBlock } from '../../../lib/rpc';
 import { explainTransaction } from '../../../lib/explain';
+import { runDecoderPlugins } from '../../../lib/decoders/registry';
 import { getGrpcTransactionBlock } from '../../../lib/grpc';
 
 const DIGEST_REGEX = /^[1-9A-HJ-NP-Za-km-z]{20,80}$|^0x[0-9a-fA-F]{40,128}$/;
@@ -79,6 +80,22 @@ export async function POST(request: Request) {
         provider: `json:${provider}`,
         requestId
       });
+      (response as any).pluginSummary = runDecoderPlugins({
+        digest,
+        moveCalls: (data as any)?.transaction?.data?.transaction?.transactions
+          ?.map((tx: any) =>
+            tx.MoveCall
+              ? {
+                  package: tx.MoveCall.package,
+                  module: tx.MoveCall.module,
+                  fn: tx.MoveCall.function
+                }
+              : null
+          )
+          .filter(Boolean),
+        objectChanges: (data as any)?.objectChanges ?? [],
+        balanceChanges: (data as any)?.balanceChanges ?? []
+      });
     } else {
       try {
         const { data, provider } = await getGrpcTransactionBlock(digest);
@@ -87,6 +104,22 @@ export async function POST(request: Request) {
           cached: false,
           provider: `grpc:${provider}`,
           requestId
+        });
+        (response as any).pluginSummary = runDecoderPlugins({
+          digest,
+          moveCalls: (data as any)?.transaction?.data?.transaction?.transactions
+            ?.map((tx: any) =>
+              tx.MoveCall
+                ? {
+                    package: tx.MoveCall.package,
+                    module: tx.MoveCall.module,
+                    fn: tx.MoveCall.function
+                  }
+                : null
+            )
+            .filter(Boolean),
+          objectChanges: (data as any)?.objectChanges ?? [],
+          balanceChanges: (data as any)?.balanceChanges ?? []
         });
       } catch (grpcError) {
         const { data, cached, provider } = await getTransactionBlock(
@@ -99,6 +132,22 @@ export async function POST(request: Request) {
           cached,
           provider: `json:${provider}`,
           requestId
+        });
+        (response as any).pluginSummary = runDecoderPlugins({
+          digest,
+          moveCalls: (data as any)?.transaction?.data?.transaction?.transactions
+            ?.map((tx: any) =>
+              tx.MoveCall
+                ? {
+                    package: tx.MoveCall.package,
+                    module: tx.MoveCall.module,
+                    fn: tx.MoveCall.function
+                  }
+                : null
+            )
+            .filter(Boolean),
+          objectChanges: (data as any)?.objectChanges ?? [],
+          balanceChanges: (data as any)?.balanceChanges ?? []
         });
       }
     }

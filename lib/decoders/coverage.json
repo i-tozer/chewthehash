@@ -1,0 +1,24 @@
+{
+  "generated_at": "2026-01-28",
+  "top_packages": [
+    {
+      "package": "0x2",
+      "module": "coin",
+      "function": "transfer",
+      "tx_count": 0
+    },
+    {
+      "package": "0x2",
+      "module": "pay",
+      "function": "pay",
+      "tx_count": 0
+    },
+    {
+      "package": "0x2",
+      "module": "coin",
+      "function": "split",
+      "tx_count": 0
+    }
+  ],
+  "notes": "Replace with weekly indexer output."
+}

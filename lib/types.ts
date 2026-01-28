@@ -58,5 +58,10 @@ export type ExplainResponse = {
     provider: string;
     requestId: string;
   };
+  pluginSummary?: {
+    title: string;
+    detail?: string;
+    confidence: 'high' | 'medium' | 'low';
+  } | null;
   error?: string;
 };

@@ -1,6 +1,7 @@
 import { ChannelCredentials } from '@grpc/grpc-js';
 import { GrpcTransport } from '@protobuf-ts/grpc-transport';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { LRUCache } from 'lru-cache';
 type GrpcOwner = { kind?: number; address?: string } | null | undefined;
 
 const OWNER_KIND = {
@@ -32,6 +33,42 @@ const ID_OPERATION = {
   DELETED: 3
 } as const;
 
+const OPEN_SIGNATURE_BODY_TYPE = {
+  TYPE_UNKNOWN: 0,
+  ADDRESS: 1,
+  BOOL: 2,
+  U8: 3,
+  U16: 4,
+  U32: 5,
+  U64: 6,
+  U128: 7,
+  U256: 8,
+  VECTOR: 9,
+  DATATYPE: 10,
+  TYPE_PARAMETER: 11
+} as const;
+
+const OPEN_SIGNATURE_REFERENCE = {
+  REFERENCE_UNKNOWN: 0,
+  IMMUTABLE: 1,
+  MUTABLE: 2
+} as const;
+
+const ARGUMENT_KIND = {
+  UNKNOWN: 0,
+  GAS: 1,
+  INPUT: 2,
+  RESULT: 3
+} as const;
+
+const INPUT_KIND = {
+  UNKNOWN: 0,
+  PURE: 1,
+  IMMUTABLE_OR_OWNED: 2,
+  SHARED: 3,
+  RECEIVING: 4
+} as const;
+
 type GrpcProvider = {
   id: string;
   url: string;
@@ -49,6 +86,13 @@ type ProviderHealth = {
 
 const providerState = new Map<string, ProviderHealth>();
 const grpcClients = new Map<string, SuiGrpcClient>();
+const functionSignatureCache = new LRUCache<
+  string,
+  { value: string; cachedAt: number }
+>({
+  max: 1000,
+  ttl: 1000 * 60 * 60
+});
 
 function resolveGrpcHost(endpoint: string): string {
   if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
@@ -185,22 +229,293 @@ function normalizeGasValue(value: unknown) {
   return '0';
 }
 
-function mapCommandsToTransactions(commands: unknown[] | undefined) {
+function shortTypeName(typeName: string) {
+  const parts = typeName.split('::');
+  if (parts.length >= 2) {
+    return `${parts[parts.length - 2]}::${parts[parts.length - 1]}`;
+  }
+  return typeName;
+}
+
+function formatOpenSignatureBody(body: any): string {
+  if (!body) return 'unknown';
+  switch (body.type) {
+    case OPEN_SIGNATURE_BODY_TYPE.ADDRESS:
+      return 'address';
+    case OPEN_SIGNATURE_BODY_TYPE.BOOL:
+      return 'bool';
+    case OPEN_SIGNATURE_BODY_TYPE.U8:
+      return 'u8';
+    case OPEN_SIGNATURE_BODY_TYPE.U16:
+      return 'u16';
+    case OPEN_SIGNATURE_BODY_TYPE.U32:
+      return 'u32';
+    case OPEN_SIGNATURE_BODY_TYPE.U64:
+      return 'u64';
+    case OPEN_SIGNATURE_BODY_TYPE.U128:
+      return 'u128';
+    case OPEN_SIGNATURE_BODY_TYPE.U256:
+      return 'u256';
+    case OPEN_SIGNATURE_BODY_TYPE.VECTOR: {
+      const inner = formatOpenSignatureBody(body.typeParameterInstantiation?.[0]);
+      return `vector<${inner}>`;
+    }
+    case OPEN_SIGNATURE_BODY_TYPE.DATATYPE: {
+      const base = shortTypeName(body.typeName ?? 'unknown');
+      const params = (body.typeParameterInstantiation ?? []).map(formatOpenSignatureBody);
+      return params.length > 0 ? `${base}<${params.join(', ')}>` : base;
+    }
+    case OPEN_SIGNATURE_BODY_TYPE.TYPE_PARAMETER:
+      return `T${body.typeParameter ?? 0}`;
+    default:
+      return 'unknown';
+  }
+}
+
+function formatOpenSignature(signature: any): string {
+  if (!signature) return 'unknown';
+  const body = formatOpenSignatureBody(signature.body);
+  if (signature.reference === OPEN_SIGNATURE_REFERENCE.MUTABLE) {
+    return `&mut ${body}`;
+  }
+  if (signature.reference === OPEN_SIGNATURE_REFERENCE.IMMUTABLE) {
+    return `&${body}`;
+  }
+  return body;
+}
+
+async function getMoveFunctionSignature(
+  client: SuiGrpcClient,
+  packageId: string,
+  moduleName: string,
+  functionName: string
+): Promise<string | undefined> {
+  const cacheKey = `${packageId}::${moduleName}::${functionName}`;
+  const cached = functionSignatureCache.get(cacheKey);
+  if (cached) return cached.value;
+
+  const { response } = await client.movePackageService.getFunction({
+    packageId,
+    moduleName,
+    name: functionName
+  });
+  const fn = (response as any).function;
+  if (!fn) return undefined;
+
+  const params = (fn.parameters ?? []).map(formatOpenSignature);
+  const returns = (fn.returns ?? []).map(formatOpenSignature);
+  const signature = `${moduleName}::${functionName}(${params.join(', ')})${
+    returns.length > 0 ? ` -> ${returns.join(', ')}` : ''
+  }`;
+
+  functionSignatureCache.set(cacheKey, { value: signature, cachedAt: Date.now() });
+  return signature;
+}
+
+async function getMoveCallSignatures(
+  client: SuiGrpcClient,
+  commands: unknown[]
+): Promise<Map<string, string>> {
+  const signatures = new Map<string, string>();
+  const tasks = commands
+    .map((command) => {
+      const entry = command as any;
+      if (entry?.command?.oneofKind !== 'moveCall') return null;
+      const move = entry.command.moveCall;
+      if (!move?.package || !move?.module || !move?.function) return null;
+      const key = `${move.package}::${move.module}::${move.function}`;
+      return { key, move };
+    })
+    .filter(Boolean) as Array<{ key: string; move: any }>;
+
+  await Promise.all(
+    tasks.map(async ({ key, move }) => {
+      if (signatures.has(key)) return;
+      try {
+        const signature = await getMoveFunctionSignature(
+          client,
+          move.package,
+          move.module,
+          move.function
+        );
+        if (signature) signatures.set(key, signature);
+      } catch {
+        // Ignore signature lookup failures; fallback to simple labels.
+      }
+    })
+  );
+
+  return signatures;
+}
+
+function encodeBytes(bytes?: Uint8Array | null) {
+  if (!bytes) return null;
+  return Buffer.from(bytes).toString('base64');
+}
+
+function mapArgument(arg: any) {
+  if (!arg) return null;
+  switch (arg.kind) {
+    case ARGUMENT_KIND.GAS:
+      return 'GasCoin';
+    case ARGUMENT_KIND.INPUT:
+      return { Input: Number(arg.input ?? 0) };
+    case ARGUMENT_KIND.RESULT:
+      if (arg.subresult !== undefined && arg.subresult !== null) {
+        return {
+          NestedResult: [Number(arg.result ?? 0), Number(arg.subresult ?? 0)]
+        };
+      }
+      return { Result: Number(arg.result ?? 0) };
+    default:
+      if (arg.input !== undefined && arg.input !== null) {
+        return { Input: Number(arg.input) };
+      }
+      return null;
+  }
+}
+
+function mapInputsToTransactionInputs(inputs: unknown[] | undefined) {
+  if (!inputs) return [];
+  return inputs.map((input) => {
+    const entry = input as any;
+    switch (entry?.kind) {
+      case INPUT_KIND.PURE:
+        return {
+          Pure: {
+            bytes: encodeBytes(entry.pure),
+            literal: entry.literal ?? null
+          }
+        };
+      case INPUT_KIND.IMMUTABLE_OR_OWNED:
+        return {
+          Object: {
+            ImmOrOwnedObject: {
+              objectId: entry.objectId ?? null,
+              version: entry.version ? String(entry.version) : null,
+              digest: entry.digest ?? null
+            }
+          }
+        };
+      case INPUT_KIND.SHARED:
+        return {
+          Object: {
+            SharedObject: {
+              objectId: entry.objectId ?? null,
+              initialSharedVersion: entry.version ? String(entry.version) : null,
+              mutable: Boolean(entry.mutable)
+            }
+          }
+        };
+      case INPUT_KIND.RECEIVING:
+        return {
+          Object: {
+            Receiving: {
+              objectId: entry.objectId ?? null,
+              version: entry.version ? String(entry.version) : null,
+              digest: entry.digest ?? null
+            }
+          }
+        };
+      default:
+        return {
+          Unknown: {
+            objectId: entry.objectId ?? null
+          }
+        };
+    }
+  });
+}
+
+function mapCommandsToTransactions(
+  commands: unknown[] | undefined,
+  signatures?: Map<string, string>
+) {
   if (!commands) return [];
   return commands
     .map((command) => {
       const entry = command as any;
-      const move =
-        entry?.command?.oneofKind === 'moveCall' ? entry.command.moveCall : null;
-      if (!move) return null;
-      return {
-        MoveCall: {
-          package: move.package,
-          module: move.module,
-          function: move.function,
-          arguments: move.arguments ?? []
-        }
-      };
+      const kind = entry?.command?.oneofKind;
+      if (!kind) return null;
+
+      if (kind === 'moveCall') {
+        const move = entry.command.moveCall;
+        const signatureKey = `${move.package}::${move.module}::${move.function}`;
+        const signature = signatures?.get(signatureKey);
+        return {
+          MoveCall: {
+            package: move.package,
+            module: move.module,
+            function: move.function,
+            arguments: (move.arguments ?? []).map(mapArgument).filter(Boolean),
+            signature
+          }
+        };
+      }
+
+      if (kind === 'transferObjects') {
+        const transfer = entry.command.transferObjects;
+        return {
+          TransferObjects: [
+            (transfer.objects ?? []).map(mapArgument).filter(Boolean),
+            mapArgument(transfer.address)
+          ]
+        };
+      }
+
+      if (kind === 'splitCoins') {
+        const split = entry.command.splitCoins;
+        return {
+          SplitCoins: [
+            mapArgument(split.coin),
+            (split.amounts ?? []).map(mapArgument).filter(Boolean)
+          ]
+        };
+      }
+
+      if (kind === 'mergeCoins') {
+        const merge = entry.command.mergeCoins;
+        return {
+          MergeCoins: [
+            mapArgument(merge.coin),
+            (merge.coinsToMerge ?? []).map(mapArgument).filter(Boolean)
+          ]
+        };
+      }
+
+      if (kind === 'publish') {
+        const publish = entry.command.publish;
+        return {
+          Publish: {
+            modules: (publish.modules ?? []).map(encodeBytes),
+            dependencies: publish.dependencies ?? []
+          }
+        };
+      }
+
+      if (kind === 'makeMoveVector') {
+        const makeVec = entry.command.makeMoveVector;
+        return {
+          MakeMoveVec: {
+            type: makeVec.elementType ?? null,
+            elements: (makeVec.elements ?? []).map(mapArgument).filter(Boolean)
+          }
+        };
+      }
+
+      if (kind === 'upgrade') {
+        const upgrade = entry.command.upgrade;
+        return {
+          Upgrade: {
+            modules: (upgrade.modules ?? []).map(encodeBytes),
+            dependencies: upgrade.dependencies ?? [],
+            package: upgrade.package ?? null,
+            ticket: mapArgument(upgrade.ticket)
+          }
+        };
+      }
+
+      return null;
     })
     .filter(Boolean);
 }
@@ -241,6 +556,7 @@ export async function getGrpcTransactionBlock(digest: string) {
           ? txData.kind.data.programmableTransaction
           : null;
       const commands = programmable?.commands ?? [];
+      const signatures = await getMoveCallSignatures(client, commands);
 
       const effects = executed.effects;
       if (!effects) {
@@ -305,7 +621,8 @@ export async function getGrpcTransactionBlock(digest: string) {
               budget: normalizeGasValue(gasPayment?.budget)
             },
             transaction: {
-              transactions: mapCommandsToTransactions(commands)
+              inputs: mapInputsToTransactionInputs(programmable?.inputs),
+              transactions: mapCommandsToTransactions(commands, signatures)
             }
           }
         },

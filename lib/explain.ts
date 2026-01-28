@@ -77,10 +77,14 @@ function parseMoveCalls(tx: TransactionResponse): MoveCallView[] {
       const moduleName = String(move.module ?? 'unknown');
       const label =
         MOVE_LABELS[fnName] ?? MOVE_LABELS[moduleName] ?? 'Move call';
+      const signature =
+        typeof move.signature === 'string' && move.signature.length > 0
+          ? move.signature
+          : null;
       return {
         id: `${index}-${fnName}`,
         label,
-        fn: `${moduleName}::${fnName}`
+        fn: signature ?? `${moduleName}::${fnName}`
       } as MoveCallView;
     })
     .filter(Boolean) as MoveCallView[];

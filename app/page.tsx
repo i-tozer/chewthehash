@@ -1,13 +1,26 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { ExplainResponse } from '../lib/types';
+import { DECODER_REGISTRY } from '../lib/decoders/registry';
+import decoderCoverage from '../lib/decoders/coverage.json';
 
 const DEFAULT_DIGEST = '';
 const HELP_COMMANDS = new Set(['help', 'about', '?']);
 
 type AnimatedValueProps = {
   value: string;
+};
+
+type PtbItem = {
+  id: string;
+  title: string;
+  detail?: string;
+};
+
+type PtbView = {
+  inputs: PtbItem[];
+  commands: PtbItem[];
 };
 
 function parseNumeric(value: string) {
@@ -60,19 +73,208 @@ function AnimatedValue({ value }: AnimatedValueProps) {
   return <span className="count-up">{display}</span>;
 }
 
+function shorten(value?: string | null, prefix = 6, suffix = 4) {
+  if (!value) return 'unknown';
+  if (value.length <= prefix + suffix + 2) return value;
+  return `${value.slice(0, prefix)}...${value.slice(-suffix)}`;
+}
+
+function formatArgument(arg: any) {
+  if (!arg) return 'unknown';
+  if (arg === 'GasCoin') return 'GasCoin';
+  if (typeof arg === 'string') return arg;
+  if (Array.isArray(arg)) return arg.map(formatArgument).join(', ');
+  if (typeof arg.Input === 'number') return `Input(${arg.Input})`;
+  if (typeof arg.Result === 'number') return `Result(${arg.Result})`;
+  if (Array.isArray(arg.NestedResult)) {
+    return `NestedResult(${arg.NestedResult[0]}, ${arg.NestedResult[1]})`;
+  }
+  return 'arg';
+}
+
+function summarizeInput(input: any, index: number): PtbItem {
+  if (input?.Object) {
+    const object = input.Object;
+    if (object.ImmOrOwnedObject) {
+      const { objectId } = object.ImmOrOwnedObject;
+      return {
+        id: `input-${index}`,
+        title: `Input ${index} · Imm/Owned Object`,
+        detail: shorten(objectId)
+      };
+    }
+    if (object.SharedObject) {
+      const { objectId, mutable } = object.SharedObject;
+      return {
+        id: `input-${index}`,
+        title: `Input ${index} · Shared Object`,
+        detail: `${shorten(objectId)} · mutable: ${mutable ? 'yes' : 'no'}`
+      };
+    }
+    if (object.Receiving) {
+      const { objectId } = object.Receiving;
+      return {
+        id: `input-${index}`,
+        title: `Input ${index} · Receiving Object`,
+        detail: shorten(objectId)
+      };
+    }
+    if (object.objectId) {
+      return {
+        id: `input-${index}`,
+        title: `Input ${index} · Object`,
+        detail: shorten(object.objectId)
+      };
+    }
+  }
+
+  if (input?.Pure) {
+    const pure = input.Pure;
+    const bytes = typeof pure === 'string' ? pure : pure?.bytes ?? null;
+    const literal = pure?.literal ?? null;
+    const detail =
+      bytes && typeof bytes === 'string'
+        ? `bytes: ${bytes.slice(0, 12)}...`
+        : literal
+          ? `literal: ${JSON.stringify(literal).slice(0, 48)}`
+          : 'pure value';
+    return {
+      id: `input-${index}`,
+      title: `Input ${index} · Pure`,
+      detail
+    };
+  }
+
+  if (input?.kind !== undefined) {
+    return {
+      id: `input-${index}`,
+      title: `Input ${index}`,
+      detail: `kind: ${input.kind}`
+    };
+  }
+
+  return { id: `input-${index}`, title: `Input ${index}`, detail: 'unknown' };
+}
+
+function summarizeCommand(command: any, index: number): PtbItem {
+  if (!command || typeof command !== 'object') {
+    return { id: `cmd-${index}`, title: `Command ${index}`, detail: 'unknown' };
+  }
+
+  const kind = Object.keys(command)[0];
+  const payload = kind ? command[kind] : null;
+  let detail = '';
+
+  switch (kind) {
+    case 'MoveCall': {
+      const signature = payload?.signature;
+      const moduleName = payload?.module;
+      const fnName = payload?.function;
+      detail = signature ?? `${moduleName ?? 'unknown'}::${fnName ?? 'unknown'}`;
+      break;
+    }
+    case 'TransferObjects': {
+      const objects = Array.isArray(payload?.[0]) ? payload[0] : payload?.objects;
+      const address = payload?.[1] ?? payload?.address;
+      const count = Array.isArray(objects) ? objects.length : 0;
+      detail = `${count} object${count === 1 ? '' : 's'} -> ${formatArgument(address)}`;
+      break;
+    }
+    case 'SplitCoins': {
+      const coin = payload?.[0] ?? payload?.coin;
+      const amounts = payload?.[1] ?? payload?.amounts;
+      const count = Array.isArray(amounts) ? amounts.length : 0;
+      detail = `${formatArgument(coin)} split ${count} way${count === 1 ? '' : 's'}`;
+      break;
+    }
+    case 'MergeCoins': {
+      const coin = payload?.[0] ?? payload?.coin;
+      const coins = payload?.[1] ?? payload?.coinsToMerge;
+      const count = Array.isArray(coins) ? coins.length : 0;
+      detail = `${count} coin${count === 1 ? '' : 's'} -> ${formatArgument(coin)}`;
+      break;
+    }
+    case 'Publish': {
+      const dependencies = payload?.dependencies ?? payload?.[1] ?? [];
+      const count = Array.isArray(dependencies) ? dependencies.length : 0;
+      detail = `dependencies: ${count}`;
+      break;
+    }
+    case 'MakeMoveVec': {
+      const elements = payload?.elements ?? payload?.[1] ?? [];
+      const count = Array.isArray(elements) ? elements.length : 0;
+      detail = `elements: ${count}`;
+      break;
+    }
+    case 'Upgrade': {
+      const pkg = payload?.package ?? payload?.[2] ?? 'package';
+      detail = `upgrade ${shorten(pkg)}`;
+      break;
+    }
+    default: {
+      detail = 'command';
+    }
+  }
+
+  return {
+    id: `cmd-${index}`,
+    title: `${String(index + 1).padStart(2, '0')} · ${kind ?? 'Command'}`,
+    detail
+  };
+}
+
+function buildPtbView(raw: any): PtbView | null {
+  const ptb = raw?.transaction?.data?.transaction;
+  const inputsRaw = Array.isArray(ptb?.inputs) ? ptb.inputs : [];
+  const commandsRaw = Array.isArray(ptb?.transactions) ? ptb.transactions : [];
+
+  if (inputsRaw.length === 0 && commandsRaw.length === 0) return null;
+
+  return {
+    inputs: inputsRaw.map((input: any, index: number) =>
+      summarizeInput(input, index)
+    ),
+    commands: commandsRaw.map((command: any, index: number) =>
+      summarizeCommand(command, index)
+    )
+  };
+}
+
 export default function Home() {
   const [digest, setDigest] = useState(DEFAULT_DIGEST);
   const [result, setResult] = useState<ExplainResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [helpMode, setHelpMode] = useState<'help' | 'about' | null>(null);
-  const [recentDigests, setRecentDigests] = useState<string[]>([]);
+  const [activeView, setActiveView] = useState<'search' | 'results'>('search');
+  const [navFocus, setNavFocus] = useState<'search' | 'recent' | 'decoders'>('search');
+  const [recentDigests, setRecentDigests] = useState<
+    Array<{ digest: string; tag?: { title: string; confidence: string } | null }>
+  >([]);
   const [recentLoading, setRecentLoading] = useState(false);
   const [recentError, setRecentError] = useState<string | null>(null);
   const [rpcMode, setRpcMode] = useState<'json' | 'grpc'>('grpc');
+  const [outputMode, setOutputMode] = useState<'human' | 'machine'>('human');
+  const [selectedDecoderId, setSelectedDecoderId] = useState<string | null>(
+    DECODER_REGISTRY[0]?.id ?? null
+  );
+  const [pluginSummary, setPluginSummary] = useState<{
+    title: string;
+    detail?: string;
+    confidence: 'high' | 'medium' | 'low';
+  } | null>(null);
   const resultAnchorRef = useRef<HTMLDivElement | null>(null);
+  const searchAnchorRef = useRef<HTMLDivElement | null>(null);
+  const recentAnchorRef = useRef<HTMLDivElement | null>(null);
+  const decodersAnchorRef = useRef<HTMLDivElement | null>(null);
+  const [pendingScroll, setPendingScroll] = useState<RefObject<HTMLDivElement> | null>(null);
 
   const hasResult = !!result?.ok;
+  const ptbView = useMemo(() => buildPtbView(result?.raw), [result]);
+  const selectedDecoder =
+    DECODER_REGISTRY.find((decoder) => decoder.id === selectedDecoderId) ??
+    DECODER_REGISTRY[0] ??
+    null;
 
   const statusMeta = useMemo(() => {
     const status = result?.summary?.status;
@@ -91,7 +293,10 @@ export default function Home() {
         if (!response.ok || !data.ok) {
           throw new Error(data?.error ?? 'Unable to load recent transactions.');
         }
-        setRecentDigests(data.digests ?? []);
+        const items = (data.digests ?? []).map((item: any) =>
+          typeof item === 'string' ? { digest: item, tag: null } : item
+        );
+        setRecentDigests(items);
       } catch (err) {
         setRecentError(err instanceof Error ? err.message : 'Unable to load recents.');
       } finally {
@@ -113,9 +318,25 @@ export default function Home() {
     window.localStorage.setItem('rpcMode', rpcMode);
   }, [rpcMode]);
 
+  useEffect(() => {
+    if (!pendingScroll?.current) return;
+    pendingScroll.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setPendingScroll(null);
+  }, [activeView, pendingScroll]);
+
   const scrollToResults = () => {
     if (!resultAnchorRef.current) return;
     resultAnchorRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const queueScroll = (
+    ref: RefObject<HTMLDivElement>,
+    view: 'search' | 'results',
+    focus?: 'search' | 'recent' | 'decoders'
+  ) => {
+    if (focus) setNavFocus(focus);
+    setPendingScroll(ref);
+    setActiveView(view);
   };
 
   const submitDigest = async (value: string) => {
@@ -125,6 +346,8 @@ export default function Home() {
       setError(null);
       setResult(null);
       setLoading(false);
+      setActiveView('search');
+      setNavFocus('search');
       return;
     }
 
@@ -132,7 +355,8 @@ export default function Home() {
     setError(null);
     setLoading(true);
     setResult(null);
-    scrollToResults();
+    setActiveView('results');
+    setNavFocus('search');
 
     try {
       const response = await fetch('/api/tx', {
@@ -146,6 +370,7 @@ export default function Home() {
         throw new Error(data?.error ?? 'Unable to explain that transaction.');
       }
       setResult(data);
+      setPluginSummary((data as any).pluginSummary ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unexpected error.');
     } finally {
@@ -168,315 +393,559 @@ export default function Home() {
     setResult(null);
     setError(null);
     setHelpMode(null);
+    setActiveView('search');
+    setNavFocus('search');
   };
 
   return (
-    <main>
-      <section className="card fade-in">
-        <div className="terminal-header">
-          <h1>Sui Transaction Explainer</h1>
-          <div className="mode-toggle">
-            <button
-              type="button"
-              className={`mode-option ${rpcMode === 'json' ? 'active' : ''}`}
-              onClick={() => setRpcMode('json')}
-            >
-              JSON-RPC
-            </button>
-            <button
-              type="button"
-              className={`mode-option ${rpcMode === 'grpc' ? 'active' : ''}`}
-              onClick={() => setRpcMode('grpc')}
-            >
-              gRPC
-            </button>
+    <main className="app-shell">
+      <aside className="side-nav">
+        <div className="side-brand">
+          <div className="side-dot" />
+          <div>
+            <div className="side-title">Chew The Hash</div>
+            <div className="side-subtitle">Transaction Console</div>
           </div>
         </div>
-        <p>
-          &gt; Paste a transaction digest to get a plain-language summary in under
-          three seconds. Built for quick demos, power users, and curious builders.
-        </p>
-        <div className="input-row">
-          <input
-            type="text"
-            value={digest}
-            onChange={(event) => setDigest(event.target.value)}
-            placeholder="enter digest... or type help"
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                handleSubmit();
-              }
-            }}
-          />
+        <div className="side-group">
+          <div className="side-label">Workspace</div>
           <button
-            className="primary"
-            onClick={handleSubmit}
-            disabled={loading || !digest.trim()}
+            type="button"
+            className={`side-link ${navFocus === 'search' ? 'active' : ''}`}
+            onClick={() => queueScroll(searchAnchorRef, 'search', 'search')}
           >
-            {loading ? 'Booting…' : 'Explain'}
+            Search
           </button>
-          {hasResult && (
-            <button className="secondary" onClick={reset}>
-              Explain another
-            </button>
-          )}
+          <button
+            type="button"
+            className={`side-link ${navFocus === 'recent' ? 'active' : ''}`}
+            onClick={() => queueScroll(recentAnchorRef, 'search', 'recent')}
+          >
+            Recent
+          </button>
+          <button
+            type="button"
+            className={`side-link ${navFocus === 'decoders' ? 'active' : ''}`}
+            onClick={() => queueScroll(decodersAnchorRef, 'search', 'decoders')}
+          >
+            Decoders
+          </button>
         </div>
-        {error && <p className="terminal-error">{error}</p>}
-        {!loading && !hasResult && !helpMode && (
-          <pre className="ascii-art">{`  .--.\n / o_o \\\n \\_^_/  TERMINAL MODE\n  /|\\   type help for commands\n /_|_\\`}</pre>
-        )}
-        {helpMode === 'help' && (
-          <div className="help-panel">
-            <p>Available commands:</p>
-            <ul className="detail-list">
-              <li>
-                <span>help</span>
-                <span>Show this panel</span>
-              </li>
-              <li>
-                <span>about</span>
-                <span>Explain the explainer</span>
-              </li>
-              <li>
-                <span>digest</span>
-                <span>Paste any Sui transaction digest</span>
-              </li>
-            </ul>
-          </div>
-        )}
-        {helpMode === 'about' && (
-          <div className="help-panel">
-            <p>About</p>
-            <p>
-              This console reads a Sui transaction digest and summarizes object
-              changes, Move calls, balance shifts, and gas usage in plain language.
-              It prioritizes accuracy and speed, and falls back to raw views for
-              complex Move arguments.
-            </p>
-          </div>
-        )}
-      </section>
+      </aside>
 
-      {hasResult && result && (
-        <section className="card summary-card fade-in">
-          <div className="summary-header">
-            <h3>Summary</h3>
-            <span className="badge beta">Beta</span>
-          </div>
-          <p className="summary-line">{result.summary.oneLiner}</p>
-        </section>
-      )}
+      <div className="content">
+        {activeView === 'search' && (
+          <>
+            <div ref={searchAnchorRef} />
+            <section className="card fade-in">
+              <div className="terminal-header">
+                <h1>Sui Transaction Explainer</h1>
+                <div className="mode-toggle">
+                  <button
+                    type="button"
+                    className={`mode-option ${rpcMode === 'json' ? 'active' : ''}`}
+                    onClick={() => setRpcMode('json')}
+                  >
+                    JSON-RPC
+                  </button>
+                  <button
+                    type="button"
+                    className={`mode-option ${rpcMode === 'grpc' ? 'active' : ''}`}
+                    onClick={() => setRpcMode('grpc')}
+                  >
+                    gRPC
+                  </button>
+                </div>
+              </div>
+              <p>
+                &gt; Paste a transaction digest to get a plain-language summary in under
+                three seconds. Built for quick demos, power users, and curious builders.
+              </p>
+              <div className="input-row">
+                <input
+                  type="text"
+                  value={digest}
+                  onChange={(event) => setDigest(event.target.value)}
+                  placeholder="enter digest... or type help"
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      handleSubmit();
+                    }
+                  }}
+                />
+                <button
+                  className="primary"
+                  onClick={handleSubmit}
+                  disabled={loading || !digest.trim()}
+                >
+                  {loading ? 'Booting…' : 'Explain'}
+                </button>
+                {hasResult && (
+                  <button className="secondary" onClick={reset}>
+                    Explain another
+                  </button>
+                )}
+              </div>
+              {error && <p className="terminal-error">{error}</p>}
+              {!loading && !hasResult && !helpMode && (
+                <pre className="ascii-art">{`  .--.\n / o_o \\\n \\_^_/  TERMINAL MODE\n  /|\\   type help for commands\n /_|_\\`}</pre>
+              )}
+              {helpMode === 'help' && (
+                <div className="help-panel">
+                  <p>Available commands:</p>
+                  <ul className="detail-list">
+                    <li>
+                      <span>help</span>
+                      <span>Show this panel</span>
+                    </li>
+                    <li>
+                      <span>about</span>
+                      <span>Explain the explainer</span>
+                    </li>
+                    <li>
+                      <span>digest</span>
+                      <span>Paste any Sui transaction digest</span>
+                    </li>
+                  </ul>
+                </div>
+              )}
+              {helpMode === 'about' && (
+                <div className="help-panel">
+                  <p>About</p>
+                  <p>
+                    This console reads a Sui transaction digest and summarizes object
+                    changes, Move calls, balance shifts, and gas usage in plain language.
+                    It prioritizes accuracy and speed, and falls back to raw views for
+                    complex Move arguments.
+                  </p>
+                </div>
+              )}
+            </section>
 
-      <section className="card fade-in">
-        <h3>Recent transactions</h3>
-        {recentLoading ? (
-          <p>Fetching recent digests...</p>
-        ) : recentError ? (
-          <p className="terminal-error">{recentError}</p>
-        ) : recentDigests.length === 0 ? (
-          <p>No recent transactions available.</p>
-        ) : (
-          <div className="recent-list">
-            {recentDigests.map((item) => (
+            <section className="card fade-in" ref={recentAnchorRef}>
+              <h3>Recent transactions</h3>
+              {recentLoading ? (
+                <p>Fetching recent digests...</p>
+              ) : recentError ? (
+                <p className="terminal-error">{recentError}</p>
+              ) : recentDigests.length === 0 ? (
+                <p>No recent transactions available.</p>
+              ) : (
+                <div className="recent-list">
+          {recentDigests.map((item) => (
               <button
-                key={item}
+                key={item.digest}
                 className="recent-button"
                 type="button"
                 onClick={() => {
-                  setDigest(item);
-                  submitDigest(item);
+                  setDigest(item.digest);
+                  submitDigest(item.digest);
                 }}
               >
-                {item}
+                <span>{item.digest}</span>
+                {item.tag ? (
+                  <span className="recent-tag">
+                    {item.tag.title} · {item.tag.confidence}
+                  </span>
+                ) : (
+                  <span className="recent-tag muted">No match</span>
+                )}
               </button>
             ))}
           </div>
         )}
       </section>
 
-      <div ref={resultAnchorRef} />
-
-      {loading && (
-        <section className="card fade-in">
-          <div className="boot-line">
-            <span className="prompt">suivibe@console</span> booting parser
-            <span className="cursor">_</span>
-          </div>
-          <div style={{ display: 'grid', gap: 12 }}>
-            <div className="skeleton" style={{ width: '45%' }} />
-            <div className="skeleton" style={{ width: '70%' }} />
-            <div className="skeleton" style={{ width: '80%' }} />
-          </div>
-        </section>
-      )}
-
-      {hasResult && result && (
-        <section className="section-grid fade-in">
-          <div className="card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-              <div>
-                <span className={`status-pill ${statusMeta.className}`}>
-                  {statusMeta.label}
-                </span>
-                <h2 style={{ marginTop: 12 }}>{result.summary.headline}</h2>
-                <p>{result.summary.subtitle}</p>
+            <section className="card fade-in" ref={decodersAnchorRef}>
+              <div className="summary-header">
+                <h3>Decoders</h3>
+                <span className="badge">maintained</span>
               </div>
-              <div className="tag-row">
-                <div className="tag">{result.summary.timing}</div>
-                <div className="tag">{result.meta.cached ? 'cached' : 'live'}</div>
-                <div className="tag">rpc: {result.meta.provider}</div>
-              </div>
-            </div>
-            <div className="keyline" />
-            <ul className="detail-list">
-              <li>
-                <span>Sender</span>
-                <span>{result.summary.sender}</span>
-              </li>
-              <li>
-                <span>Digest</span>
-                <span>{result.digest}</span>
-              </li>
-            </ul>
-            <div className="keyline" />
-            <h3>Gas</h3>
-            <ul className="detail-list">
-              <li>
-                <span>Total</span>
-                <AnimatedValue value={result.gas.total} />
-              </li>
-              <li>
-                <span>Computation</span>
-                <AnimatedValue value={result.gas.computation} />
-              </li>
-              <li>
-                <span>Storage</span>
-                <AnimatedValue value={result.gas.storage} />
-              </li>
-              <li>
-                <span>Rebate</span>
-                <AnimatedValue value={result.gas.rebate} />
-              </li>
-              {result.gas.budget && (
-                <li>
-                  <span>Budget used</span>
-                  <span>{result.gas.budget}</span>
-                </li>
-              )}
-            </ul>
-          </div>
-
-          <div className="card">
-            <h3>Transfer Flow</h3>
-            {result.transfers.length === 0 ? (
-              <p>No direct transfer edges detected.</p>
-            ) : (
-              <div className="flow">
-                {result.transfers.map((transfer) => (
-                  <div className="flow-item" key={transfer.id}>
-                    <span>{transfer.from}</span>
-                    <span className="flow-arrow">→</span>
-                    <span>{transfer.to}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="keyline" />
-            <h3>Move Calls</h3>
-            {result.moveCalls.length === 0 ? (
-              <p>No Move calls detected.</p>
-            ) : (
-              <ul className="detail-list detail-list--calls">
-                {result.moveCalls.map((call) => (
-                  <li key={call.id}>
-                    <span>{call.label}</span>
-                    <span>{call.fn}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </section>
-      )}
-
-      {hasResult && result && (
-        <section className="card fade-in">
-          <h3>What happened</h3>
-          <div className="timeline">
-            {result.timeline.map((item, index) => (
-              <div className="timeline-item" key={item.id}>
-                <div className="timeline-dot" />
-                <div className="timeline-content">
-                  <div className="timeline-title">
-                    <span className="timeline-index">{String(index + 1).padStart(2, '0')}</span>
-                    {item.title}
-                  </div>
-                  {item.detail && <div className="timeline-detail">{item.detail}</div>}
+              <p className="decoder-meta">
+                Maintained list of active decoders. Coverage data last updated{' '}
+                <strong>{decoderCoverage.generated_at}</strong>.
+              </p>
+              <p>
+                These are the currently shipped decoder plugins. Each one targets a known
+                flow and upgrades the explanation beyond the fallback parser.
+              </p>
+              <div className="decoder-layout">
+                <div className="decoder-list">
+                  {DECODER_REGISTRY.map((decoder) => (
+                    <button
+                      key={decoder.id}
+                      type="button"
+                      className={`decoder-card ${
+                        selectedDecoder?.id === decoder.id ? 'active' : ''
+                      }`}
+                      onClick={() => setSelectedDecoderId(decoder.id)}
+                    >
+                      <div className="decoder-head">
+                        <span className="decoder-title">{decoder.meta.name}</span>
+                        <span className="badge">{decoder.meta.status}</span>
+                      </div>
+                      <p className="decoder-preview">{decoder.meta.summary}</p>
+                      <div className="decoder-inline">
+                        <span className="badge">{decoder.meta.confidence}</span>
+                        <span className="badge muted">{decoder.meta.category}</span>
+                      </div>
+                    </button>
+                  ))}
                 </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {hasResult && result && (
-        <section className="card fade-in">
-          <details open>
-            <summary>Object changes</summary>
-            {result.objectChanges.length === 0 ? (
-              <p>No object changes found.</p>
-            ) : (
-              <ul className="detail-list detail-list--objects">
-                {result.objectChanges.map((change) => (
-                  <li key={change.id}>
-                    <div className="detail-main">
-                      <span>{change.label}</span>
-                      {change.badges && (
-                        <div className="badge-row">
-                          {change.badges.map((badge) => (
-                            <span className="badge" key={`${change.id}-${badge}`}>
-                              {badge}
+                <div className="decoder-detail">
+                  {selectedDecoder ? (
+                    <>
+                      <div className="summary-header">
+                        <h3>{selectedDecoder.meta.name}</h3>
+                        <span className="badge">{selectedDecoder.meta.status}</span>
+                      </div>
+                      <p>{selectedDecoder.meta.summary}</p>
+                      <div className="decoder-tags">
+                        <span className="tag">Category: {selectedDecoder.meta.category}</span>
+                        <span className="tag">Priority: {selectedDecoder.priority}</span>
+                        <span className="tag">Confidence: {selectedDecoder.meta.confidence}</span>
+                        <span className="tag">ID: {selectedDecoder.id}</span>
+                        <span className="tag">Updated: {selectedDecoder.meta.lastUpdated}</span>
+                      </div>
+                      <div className="decoder-section">
+                        <div className="decoder-section-title">What it detects</div>
+                        <div className="decoder-section-body">
+                          {selectedDecoder.meta.summary}
+                        </div>
+                      </div>
+                      <div className="decoder-section">
+                        <div className="decoder-section-title">Match signals</div>
+                        <div className="decoder-targets">
+                          {selectedDecoder.meta.targets.map((target) => (
+                            <span className="target-chip" key={`${selectedDecoder.id}-${target}`}>
+                              {target}
                             </span>
                           ))}
                         </div>
+                      </div>
+                      <div className="decoder-section">
+                        <div className="decoder-section-title">Signals</div>
+                        <ul className="decoder-bullets">
+                          {selectedDecoder.meta.signals.map((signal) => (
+                            <li key={`${selectedDecoder.id}-${signal}`}>{signal}</li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div className="decoder-section">
+                        <div className="decoder-section-title">Data sources</div>
+                        <ul className="decoder-bullets">
+                          {selectedDecoder.meta.dataSources.map((source) => (
+                            <li key={`${selectedDecoder.id}-${source}`}>{source}</li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div className="decoder-section">
+                        <div className="decoder-section-title">Limitations</div>
+                        <ul className="decoder-bullets">
+                          {selectedDecoder.meta.limitations.map((note) => (
+                            <li key={`${selectedDecoder.id}-${note}`}>{note}</li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div className="decoder-help">
+                        Click a decoder on the left to switch.
+                      </div>
+                    </>
+                  ) : (
+                    <p>No decoder selected.</p>
+                  )}
+                </div>
+              </div>
+            </section>
+          </>
+        )}
+
+        {activeView === 'results' && (
+          <>
+            <div ref={resultAnchorRef} />
+            <section className="card fade-in results-switch">
+              <div className="results-tabs">
+                <button
+                  type="button"
+                  className={`results-tab ${outputMode === 'human' ? 'active' : ''}`}
+                  onClick={() => setOutputMode('human')}
+                >
+                  Human
+                </button>
+                <button
+                  type="button"
+                  className={`results-tab ${outputMode === 'machine' ? 'active' : ''}`}
+                  onClick={() => setOutputMode('machine')}
+                >
+                  Machine
+                </button>
+              </div>
+            </section>
+
+            {loading && (
+              <section className="card fade-in">
+                <div className="boot-line">
+                  <span className="prompt">suivibe@console</span> booting parser
+                  <span className="cursor">_</span>
+                </div>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <div className="skeleton" style={{ width: '45%' }} />
+                  <div className="skeleton" style={{ width: '70%' }} />
+                  <div className="skeleton" style={{ width: '80%' }} />
+                </div>
+              </section>
+            )}
+
+            {error && <p className="terminal-error">{error}</p>}
+
+            {outputMode === 'human' && hasResult && result && (
+              <section className="card summary-card fade-in">
+                <div className="summary-header">
+                  <h3>Summary</h3>
+                  <span className="badge beta">Beta</span>
+                </div>
+                <p className="summary-line">{result.summary.oneLiner}</p>
+              </section>
+            )}
+
+            {outputMode === 'human' && (
+              <section className="card summary-card fade-in">
+                <div className="summary-header">
+                  <h3>Decoder match</h3>
+                  {pluginSummary ? (
+                    <span className="badge">{pluginSummary.confidence}</span>
+                  ) : (
+                    <span className="badge muted">fallback</span>
+                  )}
+                </div>
+                <p className="summary-line">
+                  {pluginSummary ? pluginSummary.title : 'No specialized decoder matched.'}
+                </p>
+                {pluginSummary?.detail && <p>{pluginSummary.detail}</p>}
+              </section>
+            )}
+
+            {outputMode === 'human' && (
+              <section className="card fade-in">
+                <div className="summary-header">
+                  <h3>Programmable Transaction Block</h3>
+                </div>
+                {ptbView ? (
+                  <div className="ptb-grid">
+                    <div className="ptb-panel">
+                      <div className="ptb-title">Inputs</div>
+                      {ptbView.inputs.length === 0 ? (
+                        <p>No inputs available.</p>
+                      ) : (
+                        <ul className="ptb-list">
+                          {ptbView.inputs.map((item) => (
+                            <li key={item.id}>
+                              <span className="ptb-index">{item.title}</span>
+                              <span className="ptb-detail">{item.detail}</span>
+                            </li>
+                          ))}
+                        </ul>
                       )}
                     </div>
-                    <span>{change.detail}</span>
-                  </li>
-                ))}
-              </ul>
+                    <div className="ptb-panel">
+                      <div className="ptb-title">Transactions</div>
+                      {ptbView.commands.length === 0 ? (
+                        <p>No commands available.</p>
+                      ) : (
+                        <ul className="ptb-list">
+                          {ptbView.commands.map((item) => (
+                            <li key={item.id}>
+                              <span className="ptb-index">{item.title}</span>
+                              <span className="ptb-detail">{item.detail}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p>PTB data unavailable for this transaction.</p>
+                )}
+              </section>
             )}
-          </details>
-          <div style={{ height: 12 }} />
-          <details>
-            <summary>Balance changes</summary>
-            {result.balanceChanges.length === 0 ? (
-              <p>No balance changes detected.</p>
-            ) : (
-              <ul className="detail-list">
-                {result.balanceChanges.map((change) => (
-                  <li key={change.id}>
-                    <span>{change.label}</span>
-                    <span>{change.detail}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </details>
-          <div style={{ height: 12 }} />
-          <details>
-            <summary>Raw response</summary>
-            <pre className="code-block">{JSON.stringify(result.raw, null, 2)}</pre>
-          </details>
-        </section>
-      )}
 
-      <footer>
-        Proxy latency: {result?.meta?.latencyMs ? `${result.meta.latencyMs}ms` : '--'}
-        . Cached: {result?.meta?.cached ? 'yes' : 'no'}. Provider:{' '}
-        {result?.meta?.provider ?? '--'}.
-      </footer>
+            {outputMode === 'human' && hasResult && result && (
+              <section className="section-grid fade-in">
+                <div className="card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                    <div>
+                      <span className={`status-pill ${statusMeta.className}`}>
+                        {statusMeta.label}
+                      </span>
+                      <h2 style={{ marginTop: 12 }}>{result.summary.headline}</h2>
+                      <p>{result.summary.subtitle}</p>
+                    </div>
+                    <div className="tag-row">
+                      <div className="tag">{result.summary.timing}</div>
+                      <div className="tag">{result.meta.cached ? 'cached' : 'live'}</div>
+                      <div className="tag">rpc: {result.meta.provider}</div>
+                    </div>
+                  </div>
+                  <div className="keyline" />
+                  <ul className="detail-list">
+                    <li>
+                      <span>Sender</span>
+                      <span>{result.summary.sender}</span>
+                    </li>
+                    <li>
+                      <span>Digest</span>
+                      <span>{result.digest}</span>
+                    </li>
+                  </ul>
+                  <div className="keyline" />
+                  <h3>Gas</h3>
+                  <ul className="detail-list">
+                    <li>
+                      <span>Total</span>
+                      <AnimatedValue value={result.gas.total} />
+                    </li>
+                    <li>
+                      <span>Computation</span>
+                      <AnimatedValue value={result.gas.computation} />
+                    </li>
+                    <li>
+                      <span>Storage</span>
+                      <AnimatedValue value={result.gas.storage} />
+                    </li>
+                    <li>
+                      <span>Rebate</span>
+                      <AnimatedValue value={result.gas.rebate} />
+                    </li>
+                    {result.gas.budget && (
+                      <li>
+                        <span>Budget used</span>
+                        <span>{result.gas.budget}</span>
+                      </li>
+                    )}
+                  </ul>
+                </div>
+
+                <div className="card">
+                  <h3>Transfer Flow</h3>
+                  {result.transfers.length === 0 ? (
+                    <p>No direct transfer edges detected.</p>
+                  ) : (
+                    <div className="flow">
+                      {result.transfers.map((transfer) => (
+                        <div className="flow-item" key={transfer.id}>
+                          <span>{transfer.from}</span>
+                          <span className="flow-arrow">→</span>
+                          <span>{transfer.to}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="keyline" />
+                  <h3>Move Calls</h3>
+                  {result.moveCalls.length === 0 ? (
+                    <p>No Move calls detected.</p>
+                  ) : (
+                    <ul className="detail-list detail-list--calls">
+                      {result.moveCalls.map((call) => (
+                        <li key={call.id}>
+                          <span>{call.label}</span>
+                          <span>{call.fn}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </section>
+            )}
+
+            {outputMode === 'human' && hasResult && result && (
+              <section className="card fade-in">
+                <h3>What happened</h3>
+                <div className="timeline">
+                  {result.timeline.map((item, index) => (
+                    <div className="timeline-item" key={item.id}>
+                      <div className="timeline-dot" />
+                      <div className="timeline-content">
+                        <div className="timeline-title">
+                          <span className="timeline-index">
+                            {String(index + 1).padStart(2, '0')}
+                          </span>
+                          {item.title}
+                        </div>
+                        {item.detail && <div className="timeline-detail">{item.detail}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {outputMode === 'human' && hasResult && result && (
+              <section className="card fade-in">
+                <details open>
+                  <summary>Object changes</summary>
+                  {result.objectChanges.length === 0 ? (
+                    <p>No object changes found.</p>
+                  ) : (
+                    <ul className="detail-list detail-list--objects">
+                      {result.objectChanges.map((change) => (
+                        <li key={change.id}>
+                          <div className="detail-main">
+                            <span>{change.label}</span>
+                            {change.badges && (
+                              <div className="badge-row">
+                                {change.badges.map((badge) => (
+                                  <span className="badge" key={`${change.id}-${badge}`}>
+                                    {badge}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <span>{change.detail}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </details>
+                <div style={{ height: 12 }} />
+                <details>
+                  <summary>Balance changes</summary>
+                  {result.balanceChanges.length === 0 ? (
+                    <p>No balance changes detected.</p>
+                  ) : (
+                    <ul className="detail-list">
+                      {result.balanceChanges.map((change) => (
+                        <li key={change.id}>
+                          <span>{change.label}</span>
+                          <span>{change.detail}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </details>
+              </section>
+            )}
+
+            {outputMode === 'machine' && hasResult && result && (
+              <section className="card fade-in">
+                <div className="summary-header">
+                  <h3>Machine output</h3>
+                  <span className="badge">JSON</span>
+                </div>
+                <pre className="code-block">{JSON.stringify(result, null, 2)}</pre>
+              </section>
+            )}
+          </>
+        )}
+
+        <footer>
+          Proxy latency: {result?.meta?.latencyMs ? `${result.meta.latencyMs}ms` : '--'}
+          . Cached: {result?.meta?.cached ? 'yes' : 'no'}. Provider:{' '}
+          {result?.meta?.provider ?? '--'}.
+        </footer>
+      </div>
     </main>
   );
 }
