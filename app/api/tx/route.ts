@@ -4,6 +4,7 @@ import path from 'path';
 import { readFile } from 'fs/promises';
 import { checkRateLimit, getClientIp, getTransactionBlock } from '../../../lib/rpc';
 import { explainTransaction } from '../../../lib/explain';
+import { getGrpcTransactionBlock } from '../../../lib/grpc';
 
 const DIGEST_REGEX = /^[1-9A-HJ-NP-Za-km-z]{20,80}$|^0x[0-9a-fA-F]{40,128}$/;
 
@@ -15,7 +16,8 @@ const requestSchema = z.object({
     .max(80)
     .refine((value) => DIGEST_REGEX.test(value), {
       message: 'Digest must be base58 or hex.'
-    })
+    }),
+  mode: z.enum(['json', 'grpc']).optional()
 });
 
 const OPTIONS = {
@@ -40,7 +42,7 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-    const { digest } = requestSchema.parse(body);
+    const { digest, mode } = requestSchema.parse(body);
 
     const ip = getClientIp(request.headers);
     const rate = checkRateLimit(ip);
@@ -62,18 +64,44 @@ export async function POST(request: Request) {
       return NextResponse.json(response);
     }
 
-    const { data, cached, provider } = await getTransactionBlock(
-      digest,
-      OPTIONS,
-      requestId
-    );
+    let response;
+    const latencyMs = () => Date.now() - started;
 
-    const response = explainTransaction(data as any, {
-      latencyMs: Date.now() - started,
-      cached,
-      provider,
-      requestId
-    });
+    if (mode === 'json') {
+      const { data, cached, provider } = await getTransactionBlock(
+        digest,
+        OPTIONS,
+        requestId
+      );
+      response = explainTransaction(data as any, {
+        latencyMs: latencyMs(),
+        cached,
+        provider: `json:${provider}`,
+        requestId
+      });
+    } else {
+      try {
+        const { data, provider } = await getGrpcTransactionBlock(digest);
+        response = explainTransaction(data as any, {
+          latencyMs: latencyMs(),
+          cached: false,
+          provider: `grpc:${provider}`,
+          requestId
+        });
+      } catch (grpcError) {
+        const { data, cached, provider } = await getTransactionBlock(
+          digest,
+          OPTIONS,
+          requestId
+        );
+        response = explainTransaction(data as any, {
+          latencyMs: latencyMs(),
+          cached,
+          provider: `json:${provider}`,
+          requestId
+        });
+      }
+    }
 
     return NextResponse.json(response);
   } catch (error) {

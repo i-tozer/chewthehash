@@ -69,7 +69,7 @@ export default function Home() {
   const [recentDigests, setRecentDigests] = useState<string[]>([]);
   const [recentLoading, setRecentLoading] = useState(false);
   const [recentError, setRecentError] = useState<string | null>(null);
-  const [rpcMode, setRpcMode] = useState<'json' | 'grpc'>('json');
+  const [rpcMode, setRpcMode] = useState<'json' | 'grpc'>('grpc');
   const resultAnchorRef = useRef<HTMLDivElement | null>(null);
 
   const hasResult = !!result?.ok;
@@ -135,11 +135,10 @@ export default function Home() {
     scrollToResults();
 
     try {
-      const endpoint = rpcMode === 'grpc' ? '/api/tx/grpc' : '/api/tx';
-      const response = await fetch(endpoint, {
+      const response = await fetch('/api/tx', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ digest: trimmed })
+        body: JSON.stringify({ digest: trimmed, mode: rpcMode })
       });
 
       const data = (await response.json()) as ExplainResponse;

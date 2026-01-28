@@ -1,7 +1,5 @@
 # ROADMAP
 
-This roadmap merges the vision in `THOUGHTS_1.md` with the concrete items in `IMPROVEMENTS.md`. It is public by design and reflects an open‑source delivery plan.
-
 ## TECHNICAL
 
 ### gRPC‑first infrastructure
