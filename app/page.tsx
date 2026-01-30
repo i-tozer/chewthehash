@@ -556,7 +556,7 @@ export default function Home() {
           <div className="side-dot" />
           <div>
             <div className="side-title">Chew The Hash</div>
-            <div className="side-subtitle">Transaction Console</div>
+            <div className="side-subtitle">Transaction Explainer</div>
           </div>
         </div>
         <div className="side-group">
