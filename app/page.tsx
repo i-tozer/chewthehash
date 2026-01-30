@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { ExplainResponse } from '../lib/types';
+import { bcs, fromBase64, fromHex, toHex } from '@mysten/bcs';
 import { DECODER_REGISTRY } from '../lib/decoders/registry';
 import decoderCoverage from '../lib/decoders/coverage.json';
 
@@ -92,6 +93,129 @@ function formatArgument(arg: any): string {
   return 'arg';
 }
 
+function stripRef(type: string) {
+  return type.replace(/^&mut\s+/, '').replace(/^&\s+/, '').trim();
+}
+
+function splitParams(paramStr: string) {
+  const params: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const char of paramStr) {
+    if (char === '<') depth += 1;
+    if (char === '>') depth = Math.max(0, depth - 1);
+    if (char === ',' && depth === 0) {
+      if (current.trim()) params.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim()) params.push(current.trim());
+  return params;
+}
+
+function parseParamTypes(signature?: string | null): string[] {
+  if (!signature) return [];
+  const start = signature.indexOf('(');
+  const end = signature.indexOf(')');
+  if (start === -1 || end === -1 || end <= start + 1) return [];
+  const paramStr = signature.slice(start + 1, end).trim();
+  if (!paramStr) return [];
+  return splitParams(paramStr).map(stripRef);
+}
+
+function toBytes(raw: string | Uint8Array | null | undefined) {
+  if (!raw) return null;
+  if (raw instanceof Uint8Array) return raw;
+  if (typeof raw !== 'string') return null;
+  if (raw.startsWith('0x')) return fromHex(raw);
+  return fromBase64(raw);
+}
+
+function getPureBytes(input: any): Uint8Array | null {
+  if (!input) return null;
+  const pure = input.Pure ?? input.pure ?? null;
+  if (!pure) return null;
+  if (typeof pure === 'string') return toBytes(pure);
+  if (pure.bytes) return toBytes(pure.bytes);
+  if (pure.value) return toBytes(pure.value);
+  return null;
+}
+
+function getInputIndex(arg: any): number | null {
+  if (!arg) return null;
+  if (typeof arg.Input === 'number') return arg.Input;
+  if (typeof arg.input === 'number') return arg.input;
+  if (typeof arg === 'string') {
+    const match = arg.match(/Input\((\d+)\)/);
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+function getPrimitiveBcs(type: string) {
+  switch (type) {
+    case 'u8':
+      return bcs.u8();
+    case 'u16':
+      return bcs.u16();
+    case 'u32':
+      return bcs.u32();
+    case 'u64':
+      return bcs.u64();
+    case 'u128':
+      return bcs.u128();
+    case 'u256':
+      return bcs.u256();
+    case 'bool':
+      return bcs.bool();
+    case 'address':
+      return bcs.bytes(32);
+    default:
+      return null;
+  }
+}
+
+function decodeBcsValue(type: string, bytes: Uint8Array): string | null {
+  const normalized = stripRef(type);
+  const vectorMatch = normalized.match(/^vector<(.+)>$/i);
+  if (vectorMatch) {
+    const inner = stripRef(vectorMatch[1]);
+    const innerBcs = getPrimitiveBcs(inner);
+    if (!innerBcs) return null;
+    const values = bcs.vector(innerBcs).parse(bytes) as Array<any>;
+    return `[${values.join(', ')}]`;
+  }
+  const primitive = getPrimitiveBcs(normalized);
+  if (!primitive) return null;
+  const value = primitive.parse(bytes) as any;
+  if (normalized === 'address') {
+    return `0x${toHex(value)}`;
+  }
+  return String(value);
+}
+
+function decodeMoveCallArgs(
+  signature: string | null | undefined,
+  args: any[],
+  inputs: any[]
+) {
+  const types = parseParamTypes(signature);
+  if (types.length === 0) return [];
+  return args
+    .map((arg, index) => {
+      const inputIndex = getInputIndex(arg);
+      if (inputIndex === null) return null;
+      const input = inputs[inputIndex];
+      const bytes = getPureBytes(input);
+      if (!bytes) return null;
+      const decoded = decodeBcsValue(types[index] ?? '', bytes);
+      if (!decoded) return null;
+      return `${types[index]} = ${decoded}`;
+    })
+    .filter(Boolean) as string[];
+}
 function summarizeInput(input: any, index: number): PtbItem {
   if (input?.Object) {
     const object = input.Object;
@@ -156,7 +280,7 @@ function summarizeInput(input: any, index: number): PtbItem {
   return { id: `input-${index}`, title: `Input ${index}`, detail: 'unknown' };
 }
 
-function summarizeCommand(command: any, index: number): PtbItem {
+function summarizeCommand(command: any, index: number, inputs: any[]): PtbItem {
   if (!command || typeof command !== 'object') {
     return { id: `cmd-${index}`, title: `Command ${index}`, detail: 'unknown' };
   }
@@ -170,21 +294,49 @@ function summarizeCommand(command: any, index: number): PtbItem {
       const signature = payload?.signature;
       const moduleName = payload?.module;
       const fnName = payload?.function;
-      detail = signature ?? `${moduleName ?? 'unknown'}::${fnName ?? 'unknown'}`;
+      const decodedArgs =
+        Array.isArray(payload?.decodedArgs) && payload.decodedArgs.length > 0
+          ? payload.decodedArgs
+          : decodeMoveCallArgs(signature ?? null, payload?.arguments ?? [], inputs);
+      const decodedLine = decodedArgs.length > 0 ? ` · ${decodedArgs.join(' · ')}` : '';
+      detail = `${signature ?? `${moduleName ?? 'unknown'}::${fnName ?? 'unknown'}`}${decodedLine}`;
       break;
     }
     case 'TransferObjects': {
       const objects = Array.isArray(payload?.[0]) ? payload[0] : payload?.objects;
       const address = payload?.[1] ?? payload?.address;
       const count = Array.isArray(objects) ? objects.length : 0;
-      detail = `${count} object${count === 1 ? '' : 's'} -> ${formatArgument(address)}`;
+      let addressDetail = formatArgument(address);
+      const addrInput = getInputIndex(address);
+      if (addrInput !== null) {
+        const addrBytes = getPureBytes(inputs[addrInput]);
+        if (addrBytes) {
+          const decoded = decodeBcsValue('address', addrBytes);
+          if (decoded) addressDetail = decoded;
+        }
+      }
+      detail = `${count} object${count === 1 ? '' : 's'} -> ${addressDetail}`;
       break;
     }
     case 'SplitCoins': {
       const coin = payload?.[0] ?? payload?.coin;
       const amounts = payload?.[1] ?? payload?.amounts;
       const count = Array.isArray(amounts) ? amounts.length : 0;
-      detail = `${formatArgument(coin)} split ${count} way${count === 1 ? '' : 's'}`;
+      const decodedAmounts = Array.isArray(amounts)
+        ? amounts
+            .map((amount: any) => {
+              const inputIndex = getInputIndex(amount);
+              if (inputIndex === null) return null;
+              const bytes = getPureBytes(inputs[inputIndex]);
+              if (!bytes) return null;
+              const decoded = decodeBcsValue('u64', bytes);
+              return decoded ? `u64=${decoded}` : null;
+            })
+            .filter(Boolean)
+        : [];
+      const decodedLine =
+        decodedAmounts.length > 0 ? ` · ${decodedAmounts.join(', ')}` : '';
+      detail = `${formatArgument(coin)} split ${count} way${count === 1 ? '' : 's'}${decodedLine}`;
       break;
     }
     case 'MergeCoins': {
@@ -235,7 +387,7 @@ function buildPtbView(raw: any): PtbView | null {
       summarizeInput(input, index)
     ),
     commands: commandsRaw.map((command: any, index: number) =>
-      summarizeCommand(command, index)
+      summarizeCommand(command, index, inputsRaw)
     )
   };
 }

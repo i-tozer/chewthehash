@@ -192,6 +192,15 @@ export function getGrpcClient(provider: GrpcProvider) {
   return client;
 }
 
+export function getGrpcClientForAbi(): { client: SuiGrpcClient; provider: GrpcProvider } | null {
+  const providers = pickProviders(loadGrpcProviders());
+  for (const provider of providers) {
+    if (isCircuitOpen(getProviderState(provider))) continue;
+    return { client: getGrpcClient(provider), provider };
+  }
+  return null;
+}
+
 function mapOwner(owner: GrpcOwner) {
   if (!owner || owner.kind == null) return null;
   switch (owner.kind) {
@@ -447,6 +456,7 @@ function mapCommandsToTransactions(
             package: move.package,
             module: move.module,
             function: move.function,
+            typeArguments: move.typeArguments ?? [],
             arguments: (move.arguments ?? []).map(mapArgument).filter(Boolean),
             signature
           }

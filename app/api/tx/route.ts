@@ -6,6 +6,7 @@ import { checkRateLimit, getClientIp, getTransactionBlock } from '../../../lib/r
 import { explainTransaction } from '../../../lib/explain';
 import { runDecoderPlugins } from '../../../lib/decoders/registry';
 import { getGrpcTransactionBlock } from '../../../lib/grpc';
+import { decodeMoveCallArgsWithAbi } from '../../../lib/abi';
 
 const DIGEST_REGEX = /^[1-9A-HJ-NP-Za-km-z]{20,80}$|^0x[0-9a-fA-F]{40,128}$/;
 
@@ -28,6 +29,28 @@ const OPTIONS = {
   showObjectChanges: true,
   showBalanceChanges: true
 };
+
+async function attachAbiDecodedArgs(data: any) {
+  const inputs = data?.transaction?.data?.transaction?.inputs ?? [];
+  const transactions = data?.transaction?.data?.transaction?.transactions ?? [];
+  await Promise.all(
+    transactions.map(async (tx: any) => {
+      if (!tx?.MoveCall) return;
+      const move = tx.MoveCall;
+      if (!move.package || !move.module || !move.function) return;
+      const decoded = await decodeMoveCallArgsWithAbi({
+        packageId: move.package,
+        moduleName: move.module,
+        functionName: move.function,
+        typeArguments: move.typeArguments ?? [],
+        arguments: move.arguments ?? [],
+        inputs
+      });
+      if (decoded.length === 0) return;
+      move.decodedArgs = decoded.map((item) => `${item.type} = ${item.value}`);
+    })
+  );
+}
 
 async function loadFixture(digest: string) {
   const fixturePath = path.join(process.cwd(), 'fixtures', 'tx-success.json');
@@ -74,6 +97,7 @@ export async function POST(request: Request) {
         OPTIONS,
         requestId
       );
+      await attachAbiDecodedArgs(data as any);
       response = explainTransaction(data as any, {
         latencyMs: latencyMs(),
         cached,
@@ -99,6 +123,7 @@ export async function POST(request: Request) {
     } else {
       try {
         const { data, provider } = await getGrpcTransactionBlock(digest);
+        await attachAbiDecodedArgs(data as any);
         response = explainTransaction(data as any, {
           latencyMs: latencyMs(),
           cached: false,
@@ -127,6 +152,7 @@ export async function POST(request: Request) {
           OPTIONS,
           requestId
         );
+        await attachAbiDecodedArgs(data as any);
         response = explainTransaction(data as any, {
           latencyMs: latencyMs(),
           cached,
