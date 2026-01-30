@@ -382,6 +382,7 @@ export async function decodeMoveCallArgsWithAbi(args: {
   typeArguments?: string[];
   arguments: any[];
   inputs: any[];
+  objectTypes?: Record<string, string>;
 }): Promise<DecodedArg[]> {
   const fn = await getFunctionDescriptor(
     args.packageId,
@@ -401,15 +402,30 @@ export async function decodeMoveCallArgsWithAbi(args: {
     const inputIndex = getInputIndex(arg);
     if (inputIndex === null) continue;
     const input = args.inputs[inputIndex];
-    const pure = input?.Pure ?? input?.pure ?? null;
-    const bytes = toBytes(pure?.bytes ?? pure ?? null);
-    if (!bytes) continue;
+    const object = input?.Object ?? null;
+    const objectId =
+      object?.ImmOrOwnedObject?.objectId ??
+      object?.SharedObject?.objectId ??
+      object?.Receiving?.objectId ??
+      object?.objectId ??
+      null;
 
     const paramBody = fn.parameters?.[i]?.body;
     if (!paramBody) continue;
+    const typeLabel = paramBody.typeName ?? formatOpenSignatureBody(paramBody);
+
+    if (objectId) {
+      const objectType = args.objectTypes?.[objectId];
+      const value = objectType ? `${objectId} (${objectType})` : objectId;
+      decoded.push({ index: i, value, type: typeLabel });
+      continue;
+    }
+
+    const pure = input?.Pure ?? input?.pure ?? null;
+    const bytes = toBytes(pure?.bytes ?? pure ?? null);
+    if (!bytes) continue;
     const value = await decodeArgValue(paramBody, bytes, typeArgs);
     if (!value) continue;
-    const typeLabel = paramBody.typeName ?? formatOpenSignatureBody(paramBody);
     decoded.push({ index: i, value, type: typeLabel });
   }
 

@@ -2,7 +2,12 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import path from 'path';
 import { readFile } from 'fs/promises';
-import { checkRateLimit, getClientIp, getTransactionBlock } from '../../../lib/rpc';
+import {
+  checkRateLimit,
+  getClientIp,
+  getObjectTypes,
+  getTransactionBlock
+} from '../../../lib/rpc';
 import { explainTransaction } from '../../../lib/explain';
 import { runDecoderPlugins } from '../../../lib/decoders/registry';
 import { getGrpcTransactionBlock } from '../../../lib/grpc';
@@ -30,9 +35,28 @@ const OPTIONS = {
   showBalanceChanges: true
 };
 
-async function attachAbiDecodedArgs(data: any) {
+function extractInputObjectIds(inputs: any[]) {
+  const ids: string[] = [];
+  inputs.forEach((input) => {
+    const object = input?.Object ?? null;
+    if (object?.ImmOrOwnedObject?.objectId) {
+      ids.push(object.ImmOrOwnedObject.objectId);
+    } else if (object?.SharedObject?.objectId) {
+      ids.push(object.SharedObject.objectId);
+    } else if (object?.Receiving?.objectId) {
+      ids.push(object.Receiving.objectId);
+    } else if (object?.objectId) {
+      ids.push(object.objectId);
+    }
+  });
+  return Array.from(new Set(ids));
+}
+
+async function attachAbiDecodedArgs(data: any, requestId: string) {
   const inputs = data?.transaction?.data?.transaction?.inputs ?? [];
   const transactions = data?.transaction?.data?.transaction?.transactions ?? [];
+  const objectIds = extractInputObjectIds(inputs);
+  const objectTypes = objectIds.length > 0 ? await getObjectTypes(objectIds, requestId) : {};
   await Promise.all(
     transactions.map(async (tx: any) => {
       if (!tx?.MoveCall) return;
@@ -44,7 +68,8 @@ async function attachAbiDecodedArgs(data: any) {
         functionName: move.function,
         typeArguments: move.typeArguments ?? [],
         arguments: move.arguments ?? [],
-        inputs
+        inputs,
+        objectTypes
       });
       if (decoded.length === 0) return;
       move.decodedArgs = decoded.map((item) => `${item.type} = ${item.value}`);
@@ -97,7 +122,7 @@ export async function POST(request: Request) {
         OPTIONS,
         requestId
       );
-      await attachAbiDecodedArgs(data as any);
+      await attachAbiDecodedArgs(data as any, requestId);
       response = explainTransaction(data as any, {
         latencyMs: latencyMs(),
         cached,
@@ -123,7 +148,7 @@ export async function POST(request: Request) {
     } else {
       try {
         const { data, provider } = await getGrpcTransactionBlock(digest);
-        await attachAbiDecodedArgs(data as any);
+        await attachAbiDecodedArgs(data as any, requestId);
         response = explainTransaction(data as any, {
           latencyMs: latencyMs(),
           cached: false,
@@ -152,7 +177,7 @@ export async function POST(request: Request) {
           OPTIONS,
           requestId
         );
-        await attachAbiDecodedArgs(data as any);
+        await attachAbiDecodedArgs(data as any, requestId);
         response = explainTransaction(data as any, {
           latencyMs: latencyMs(),
           cached,

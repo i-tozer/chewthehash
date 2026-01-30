@@ -32,6 +32,11 @@ const recentCache = new LRUCache<string, { value: string[]; cachedAt: number }>(
   ttl: 1000 * 15
 });
 
+const objectTypeCache = new LRUCache<string, { value: string; cachedAt: number }>({
+  max: 2000,
+  ttl: 1000 * 60 * 10
+});
+
 const rateLimiter = new LRUCache<string, { count: number; resetAt: number }>({
   max: 2000,
   ttl: 1000 * 60 * 2
@@ -204,6 +209,53 @@ export async function getRecentTransactionDigests(
         .filter(Boolean);
       recentCache.set(cacheKey, { value: digests, cachedAt: Date.now() });
       return { digests, cached: false, provider: provider.url };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError ?? new Error('All providers failed');
+}
+
+export async function getObjectTypes(objectIds: string[], requestId: string) {
+  const results: Record<string, string> = {};
+  const missing: string[] = [];
+
+  objectIds.forEach((id) => {
+    const cached = objectTypeCache.get(id);
+    if (cached?.value) {
+      results[id] = cached.value;
+    } else {
+      missing.push(id);
+    }
+  });
+
+  if (missing.length === 0) return results;
+
+  const providers = pickProviders(loadProviders());
+  const timeoutMs = Number(process.env.SUI_RPC_TIMEOUT_MS ?? 2200);
+  let lastError: unknown = null;
+
+  for (const provider of providers) {
+    if (isCircuitOpen(getProviderState(provider))) continue;
+    try {
+      const response = await jsonRpcRequest<any>(
+        provider,
+        'sui_multiGetObjects',
+        [missing, { showType: true }],
+        timeoutMs,
+        requestId
+      );
+      const items = response ?? [];
+      items.forEach((item: any) => {
+        const objectId = item?.data?.objectId;
+        const type = item?.data?.type;
+        if (objectId && type) {
+          results[objectId] = type;
+          objectTypeCache.set(objectId, { value: type, cachedAt: Date.now() });
+        }
+      });
+      return results;
     } catch (error) {
       lastError = error;
     }
