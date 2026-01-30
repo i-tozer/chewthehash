@@ -353,6 +353,27 @@ button:hover {
   color: #ffe3cd;
 }
 
+.summary-subtitle {
+  margin-top: 6px;
+  color: rgba(255, 221, 198, 0.7);
+  font-size: 0.92rem;
+}
+
+.summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.summary-muted {
+  margin-top: 10px;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(255, 205, 167, 0.55);
+}
+
 .ptb-grid {
   display: grid;
   gap: 18px;

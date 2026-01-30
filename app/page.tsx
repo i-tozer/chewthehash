@@ -705,7 +705,14 @@ export default function Home() {
                   <h3>Summary</h3>
                   <span className="badge beta">Beta</span>
                 </div>
-                <p className="summary-line">{result.summary.oneLiner}</p>
+                <p className="summary-line">{result.summary.headline}</p>
+                <p className="summary-subtitle">{result.summary.subtitle}</p>
+                <div className="summary-meta">
+                  <span className="tag">Status: {result.summary.status}</span>
+                  <span className="tag">Sender: {result.summary.sender}</span>
+                  <span className="tag">{result.summary.timing}</span>
+                </div>
+                <p className="summary-muted">One-liner: {result.summary.oneLiner}</p>
               </section>
             )}
 
